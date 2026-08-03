@@ -17,6 +17,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 import queue
 import wave
 from collections import namedtuple
@@ -307,7 +308,7 @@ class XLiveSplitterApp(ctk.CTk):
 
         row = ctk.CTkFrame(self.src_content_frame, fg_color="transparent")
         row.pack(fill="x", padx=12, pady=8)
-        ctk.CTkButton(row, text="📁 Choose WAV File(s)…", command=lambda: self.after(50, self.choose_source), height=32, corner_radius=6, **btn_kwargs).pack(side="left")
+        ctk.CTkButton(row, text="📁 Choose WAV File(s)…", command=self.choose_source, height=32, corner_radius=6, **btn_kwargs).pack(side="left")
         ctk.CTkLabel(row, text="Select multiple files to stitch them together sequentially.", text_color=self.SILVER, font=self.font_small).pack(side="left", padx=10)
 
         self.source_list_frame = ctk.CTkScrollableFrame(self.src_content_frame, fg_color=self.DARK_SLATE, height=100, corner_radius=6)
@@ -364,7 +365,7 @@ class XLiveSplitterApp(ctk.CTk):
 
         orow = ctk.CTkFrame(self.out_content_frame, fg_color="transparent")
         orow.pack(fill="x")
-        ctk.CTkButton(orow, text="📁 Choose Folder…", command=lambda: self.after(50, self.choose_output), height=32, corner_radius=6, **btn_kwargs).pack(side="left")
+        ctk.CTkButton(orow, text="📁 Choose Folder…", command=self.choose_output, height=32, corner_radius=6, **btn_kwargs).pack(side="left")
         
         self.output_var = ctk.StringVar(value="(same folder as source, in a new subfolder)")
         ctk.CTkLabel(orow, textvariable=self.output_var, text_color=self.SILVER, font=self.font_small, wraplength=400).pack(side="left", padx=12)
@@ -401,7 +402,7 @@ class XLiveSplitterApp(ctk.CTk):
                                           dropdown_text_color=self.COOL_WHITE, width=180, font=self.font_main,
                                           command=self.on_daw_selected)
         self.daw_combo.pack(side="left", padx=(8, 12))
-        self.daw_locate_btn = ctk.CTkButton(drow, text="📁 Locate…", command=lambda: self.after(50, self.choose_daw_path), width=90, height=32, corner_radius=6, **btn_kwargs)
+        self.daw_locate_btn = ctk.CTkButton(drow, text="📁 Locate…", command=self.choose_daw_path, width=90, height=32, corner_radius=6, **btn_kwargs)
         self.daw_locate_btn.pack(side="left")
         self.daw_locate_btn.configure(state=("normal" if self.daw_choice == "Custom…" else "disabled"))
 
@@ -442,18 +443,36 @@ class XLiveSplitterApp(ctk.CTk):
         for child in parent.winfo_children():
             if isinstance(child, ctk.CTkButton):
                 command = child.cget("command")
-                if command:
-                    def force_click(event, btn=child, cmd=command):
-                        if btn.cget("state") != "disabled":
+                if command and not getattr(child, "_hitbox_fixed", False):
+                    child._hitbox_fixed = True
+                    
+                    # 1. Wrap the original command in a 0.2s debounce to stop double-firing
+                    def debounced_cmd(cmd=command, btn=child):
+                        if btn.cget("state") == "disabled":
+                            return
+                        now = time.time()
+                        if not hasattr(btn, "_last_click_time") or (now - btn._last_click_time) > 0.2:
+                            btn._last_click_time = now
                             cmd()
+                            
+                    child.configure(command=debounced_cmd)
+                    
+                    # 2. Force the internal components to route clicks directly to the button's native handler
+                    def route_click(event, btn=child):
+                        if btn.cget("state") != "disabled":
+                            btn._clicked()
+                            
                     if hasattr(child, "_canvas") and child._canvas:
-                        child._canvas.bind("<Button-1>", force_click, add="+")
+                        child._canvas.bind("<ButtonRelease-1>", route_click, add="+")
                     if hasattr(child, "_text_label") and child._text_label:
-                        child._text_label.bind("<Button-1>", force_click, add="+")
+                        child._text_label.bind("<ButtonRelease-1>", route_click, add="+")
                     if hasattr(child, "_image_label") and child._image_label:
-                        child._image_label.bind("<Button-1>", force_click, add="+")
+                        child._image_label.bind("<ButtonRelease-1>", route_click, add="+")
+                        
+            # Recurse into nested frames
             if child.winfo_children():
                 self._fix_button_hitboxes(child)
+
 
     # ---------------- UI Toggles ----------------
     def toggle_source(self):
@@ -497,19 +516,10 @@ class XLiveSplitterApp(ctk.CTk):
             self.automation_expanded = True
 
     # ---------------- Source File Handling ----------------
-    def _bring_to_front(self):
-        try:
-            self.lift()
-            self.focus_force()
-            self.attributes("-topmost", True)
-            self.update_idletasks()
-            self.after(50, lambda: self.attributes("-topmost", False))
-        except Exception:
-            pass
 
     def choose_source(self):
-        self._bring_to_front()
         paths = filedialog.askopenfilenames(
+            parent=self,
             title="Select XLive multitrack WAV file(s)",
             initialdir=os.path.expanduser("~"),
             filetypes=[("WAV files", "*.wav *.WAV"), ("All files", "*.*")]
@@ -588,7 +598,7 @@ class XLiveSplitterApp(ctk.CTk):
                     raise ValueError(f"'{os.path.basename(p)}' has a different format and can't be "
                                       f"combined with '{os.path.basename(self.source_paths[0])}'.")
         except Exception as e:
-            messagebox.showerror("Format mismatch", str(e))
+            messagebox.showerror("Format mismatch", str(e), parent=self)
             self.source_paths.clear()
             self.refresh_source_list()
             self.validate_and_update_format()
@@ -639,18 +649,19 @@ class XLiveSplitterApp(ctk.CTk):
     def load_preset(self):
         name = self.preset_var.get()
         if not name or name not in self.presets:
-            messagebox.showinfo("Select a preset", "Choose a saved preset from the dropdown first.")
+            messagebox.showinfo("Select a preset", "Choose a saved preset from the dropdown first.", parent=self)
             return
         names = self.presets[name]
         if not self.wav_format:
-            messagebox.showinfo("Load a file first", "Choose a source WAV file before loading a preset.")
+            messagebox.showinfo("Load a file first", "Choose a source WAV file before loading a preset.", parent=self)
             return
         if len(names) != self.wav_format.channels:
             if not messagebox.askyesno(
                 "Channel count mismatch",
                 f"Preset '{name}' has {len(names)} track names, but the loaded file has "
                 f"{self.wav_format.channels} channels.\n\nApply anyway? Extra channels will keep "
-                f"default names, and any extra preset names will be ignored."
+                f"default names, and any extra preset names will be ignored.",
+                parent=self
             ):
                 return
         for i, var in enumerate(self.name_vars):
@@ -659,9 +670,8 @@ class XLiveSplitterApp(ctk.CTk):
 
     def save_preset_as(self):
         if not self.name_vars:
-            messagebox.showinfo("Nothing to save", "Choose a source file and set track names first.")
+            messagebox.showinfo("Nothing to save", "Choose a source file and set track names first.", parent=self)
             return
-        self._bring_to_front()
         dialog = ctk.CTkInputDialog(text='Preset name (e.g. "Sunday Service"):', title="Save Preset")
         name = dialog.get_input()
         if not name:
@@ -670,14 +680,14 @@ class XLiveSplitterApp(ctk.CTk):
         save_presets(self.presets)
         self.preset_combo.configure(values=sorted(self.presets.keys()))
         self.preset_var.set(name)
-        messagebox.showinfo("Saved", f"Preset '{name}' saved.")
+        messagebox.showinfo("Saved", f"Preset '{name}' saved.", parent=self)
 
     def delete_preset(self):
         name = self.preset_var.get()
         if not name or name not in self.presets:
-            messagebox.showinfo("Select a preset", "Choose a saved preset from the dropdown first.")
+            messagebox.showinfo("Select a preset", "Choose a saved preset from the dropdown first.", parent=self)
             return
-        if messagebox.askyesno("Delete preset", f"Delete the preset '{name}'? This can't be undone."):
+        if messagebox.askyesno("Delete preset", f"Delete the preset '{name}'? This can't be undone.", parent=self):
             del self.presets[name]
             save_presets(self.presets)
             self.preset_combo.configure(values=sorted(self.presets.keys()))
@@ -685,8 +695,7 @@ class XLiveSplitterApp(ctk.CTk):
 
     # ---------------- Output ----------------
     def choose_output(self):
-        self._bring_to_front()
-        path = filedialog.askdirectory(title="Choose output folder", initialdir=os.path.expanduser("~"))
+        path = filedialog.askdirectory(parent=self, title="Choose output folder", initialdir=os.path.expanduser("~"))
         if path:
             self.output_dir_override = path
             self.output_var.set(path)
@@ -708,8 +717,8 @@ class XLiveSplitterApp(ctk.CTk):
         self.daw_status_var.set(self._daw_status_text())
 
     def choose_daw_path(self):
-        self._bring_to_front()
         path = filedialog.askopenfilename(
+            parent=self,
             title="Select an application",
             initialdir="/Applications",
             filetypes=[("Applications", "*.app"), ("All files", "*.*")]
@@ -740,7 +749,8 @@ class XLiveSplitterApp(ctk.CTk):
         if len(set(names)) != len(names):
             if not messagebox.askyesno("Duplicate names",
                                         "Two or more tracks have the same name after sanitizing. "
-                                        "Files may overwrite each other. Continue anyway?"):
+                                        "Files may overwrite each other. Continue anyway?",
+                                        parent=self):
                 return
 
         if self.output_dir_override:
@@ -799,7 +809,7 @@ class XLiveSplitterApp(ctk.CTk):
                 elif kind == "error":
                     self.status_label.configure(text="Error.")
                     self.export_button.configure(state="normal", text="⚙️ Export Tracks")
-                    messagebox.showerror("Export failed", msg[1])
+                    messagebox.showerror("Export failed", msg[1], parent=self)
                     return
         except queue.Empty:
             pass
@@ -819,14 +829,15 @@ class XLiveSplitterApp(ctk.CTk):
                         "No app selected",
                         "Your tracks were exported successfully. Use the 'Locate…' button "
                         "in the After Export section to choose an app, then export again to "
-                        "have them open automatically next time."
+                        "have them open automatically next time.",
+                        parent=self
                     )
                     return
                 subprocess.run(["open", "-a", self.daw_path] + out_paths)
             else:
                 subprocess.run(["open", "-a", self.daw_choice] + out_paths)
         except Exception as e:
-            messagebox.showwarning(f"Couldn't open {self.daw_choice}", str(e))
+            messagebox.showwarning(f"Couldn't open {self.daw_choice}", str(e), parent=self)
             print(f"Could not open in {self.daw_choice}: {e}")
 
 
