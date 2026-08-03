@@ -258,8 +258,8 @@ class XLiveSplitterApp(ctk.CTk):
         ctk.set_appearance_mode("dark")
         self.configure(fg_color=self.DARK_SLATE)
         self.title("XLive Splitter")
-        self.geometry("680x960")
-        self.minsize(600, 760)
+        self.geometry("700x800")
+        self.minsize(600, 500)
 
         self.source_paths = []
         self.wav_format = None
@@ -288,8 +288,14 @@ class XLiveSplitterApp(ctk.CTk):
         
         frame_kwargs = {"fg_color": self.CARD_BG, "corner_radius": 8}
 
+        # Everything lives inside a scrollable container so sections can never
+        # render below the visible window/screen edge, no matter how many
+        # cards exist or how small the display is.
+        self.main_scroll = ctk.CTkScrollableFrame(self, fg_color=self.DARK_SLATE)
+        self.main_scroll.pack(fill="both", expand=True)
+
         # --- 1. Source Section ---
-        src_frame = ctk.CTkFrame(self, **frame_kwargs)
+        src_frame = ctk.CTkFrame(self.main_scroll, **frame_kwargs)
         self.src_expanded = True
         self.src_header_btn = ctk.CTkButton(src_frame, text="▼ 1. Source Recording", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
@@ -313,7 +319,7 @@ class XLiveSplitterApp(ctk.CTk):
         self.format_label.pack(fill="x", padx=12, pady=(0, 10))
 
         # --- 2. Preset Section ---
-        preset_frame = ctk.CTkFrame(self, **frame_kwargs)
+        preset_frame = ctk.CTkFrame(self.main_scroll, **frame_kwargs)
         self.preset_expanded = True
         self.preset_header_btn = ctk.CTkButton(preset_frame, text="▼ 2. Track Names", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
@@ -346,7 +352,7 @@ class XLiveSplitterApp(ctk.CTk):
         self.placeholder_label.pack(padx=6, pady=20)
 
         # --- 3. Output Section ---
-        out_frame = ctk.CTkFrame(self, **frame_kwargs)
+        out_frame = ctk.CTkFrame(self.main_scroll, **frame_kwargs)
         self.out_expanded = True
         self.out_header_btn = ctk.CTkButton(out_frame, text="▼ 3. Output", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
@@ -365,7 +371,7 @@ class XLiveSplitterApp(ctk.CTk):
         ctk.CTkLabel(orow, textvariable=self.output_var, text_color=self.SILVER, font=self.font_small, wraplength=400).pack(side="left", padx=12)
 
         # --- 4. After Export ---
-        automation_frame = ctk.CTkFrame(self, **frame_kwargs)
+        automation_frame = ctk.CTkFrame(self.main_scroll, **frame_kwargs)
         self.automation_expanded = True
         self.automation_header_btn = ctk.CTkButton(automation_frame, text="▼ 4. After Export", font=self.font_title,
                                             text_color=self.COOL_WHITE, fg_color="transparent",
@@ -405,7 +411,7 @@ class XLiveSplitterApp(ctk.CTk):
                      font=self.font_small, wraplength=560, justify="left").pack(anchor="w", pady=(4, 0))
 
         # --- 5. Export ---
-        export_frame = ctk.CTkFrame(self, fg_color="transparent")
+        export_frame = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
         self.export_button = ctk.CTkButton(export_frame, text="⚙️ Export Tracks", command=self.start_export, state="disabled",
                                            fg_color=self.RUST_RED, text_color=self.WARM_CREAM, hover_color="#A93226", 
                                            font=ctk.CTkFont(family="SF Pro Display", size=15, weight="bold"), height=40)
@@ -418,12 +424,14 @@ class XLiveSplitterApp(ctk.CTk):
         self.status_label = ctk.CTkLabel(export_frame, text="", text_color=self.SILVER, font=self.font_small)
         self.status_label.pack(fill="x")
 
-        # --- Layout Order ---
+        # --- Layout Order (simple top-to-bottom; the scrollable container
+        # above handles anything that doesn't fit, so no more pinning
+        # sections to specific screen edges) ---
         src_frame.pack(side="top", fill="x", **pad)
-        export_frame.pack(side="bottom", fill="x", **pad)
-        automation_frame.pack(side="bottom", fill="x", **pad)
-        out_frame.pack(side="bottom", fill="x", **pad)
-        preset_frame.pack(side="top", fill="both", expand=True, **pad)
+        preset_frame.pack(side="top", fill="x", **pad)
+        out_frame.pack(side="top", fill="x", **pad)
+        automation_frame.pack(side="top", fill="x", **pad)
+        export_frame.pack(side="top", fill="x", **pad)
         
         self.output_dir_override = None
 
