@@ -542,17 +542,17 @@ class XLiveSplitterApp(ctk.CTk):
                             
                     child.configure(command=debounced_cmd)
                     
-                    # 2. Force the internal components to route clicks directly to the button's native handler
-                    def route_click(event, btn=child):
+                    # 2. Directly trigger our debounced command, completely bypassing CustomTkinter's internal state machine
+                    def route_click(event, btn=child, action=debounced_cmd):
                         if btn.cget("state") != "disabled":
-                            btn._clicked()
+                            action()
                             
                     if hasattr(child, "_canvas") and child._canvas:
-                        child._canvas.bind("<ButtonRelease-1>", route_click, add="+")
+                        child._canvas.bind("<Button-1>", route_click, add="+")
                     if hasattr(child, "_text_label") and child._text_label:
-                        child._text_label.bind("<ButtonRelease-1>", route_click, add="+")
+                        child._text_label.bind("<Button-1>", route_click, add="+")
                     if hasattr(child, "_image_label") and child._image_label:
-                        child._image_label.bind("<ButtonRelease-1>", route_click, add="+")
+                        child._image_label.bind("<Button-1>", route_click, add="+")
                         
             # Recurse into nested frames
             if child.winfo_children():
