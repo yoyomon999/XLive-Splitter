@@ -42,6 +42,9 @@ Example bullets to adapt:
 - Automatically open exported tracks into your selected DAW
 
 ---
+## Known Issues
+1. When clicking to open "Choose Wave File(s)" or "Choose Folder" it sometimes takes a couple clicks to open.
+---
 
 ## Download
 
