@@ -51,7 +51,7 @@ before any setup/build instructions. Link straight to your GitHub
 Releases page and/or the specific latest files if you have them.
 -->
 
-Grab the latest build from the [Releases page]([https://github.com/OWNER/REPO/releases](https://github.com/yoyomon999/XLive-Splitter/releases).
+Grab the latest build from the [Releases page](https://github.com/OWNER/REPO/releases](https://github.com/yoyomon999/XLive-Splitter/releases).
 
 | Platform | Download | Notes |
 |---|---|---|
