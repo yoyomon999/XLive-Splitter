@@ -84,7 +84,7 @@ needing to locate their DAW manually the first time, etc.
 
 1. Choose your source WAV file(s) from the X-Live / SD card
 2. Name each channel (or load a saved preset)
-3. Choose an output folder (optional — defaults next to the source)
+3. Choose an output folder (defaults next to the source)
 4. Click Export
 5. Tracks are written, and [folder opens / DAW opens] automatically
 
