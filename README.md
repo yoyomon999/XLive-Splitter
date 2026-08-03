@@ -39,7 +39,7 @@ Example bullets to adapt:
 - Split X32 Xlive .wav multitracks
 - Combines 4bg files into single tracks
 - Track Name Presets
-- Autimatically open exported tracks into your selected DAW
+- Automatically open exported tracks into your selected DAW
 
 ---
 
