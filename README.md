@@ -55,8 +55,8 @@ Grab the latest build from the [Releases page](https://github.com/yoyomon999/XLi
 
 | Platform | Download | Notes |
 |---|---|---|
-| macOS | [Xlive Splitter Mac.zip](https://github.com/yoyomon999/XLive-Splitter/releases/tag/v1.0_Mac) | 
-| Windows | [XLive_Splitter_Windows.exe](https://github.com/yoyomon999/XLive-Splitter/releases/tag/v1.0_Mac) | 
+| macOS | [Xlive Splitter Mac](https://github.com/yoyomon999/XLive-Splitter/releases/tag/v1.0_Mac) | 
+| Windows | [XLive_Splitter_Windows ](https://github.com/yoyomon999/XLive-Splitter/releases/tag/v1.0_Mac) | 
 
 ---
 
