@@ -477,7 +477,22 @@ class XLiveSplitterApp(ctk.CTk):
             self.automation_expanded = True
 
     # ---------------- Source File Handling ----------------
+    def _bring_to_front(self):
+        # macOS/Tk quirk: native dialogs (file pickers, etc.) can open behind
+        # the main window instead of in front of it, especially right after
+        # a scroll or a collapse/expand click changes what has focus. This
+        # forces the app (and the dialog about to open) to the front.
+        try:
+            self.lift()
+            self.focus_force()
+            self.attributes("-topmost", True)
+            self.update_idletasks()
+            self.after(50, lambda: self.attributes("-topmost", False))
+        except Exception:
+            pass
+
     def choose_source(self):
+        self._bring_to_front()
         paths = filedialog.askopenfilenames(
             title="Select XLive multitrack WAV file(s)",
             filetypes=[("WAV files", "*.wav *.WAV"), ("All files", "*.*")]
@@ -629,6 +644,7 @@ class XLiveSplitterApp(ctk.CTk):
         if not self.name_vars:
             messagebox.showinfo("Nothing to save", "Choose a source file and set track names first.")
             return
+        self._bring_to_front()
         dialog = ctk.CTkInputDialog(text='Preset name (e.g. "Sunday Service"):', title="Save Preset")
         name = dialog.get_input()
         if not name:
@@ -652,6 +668,7 @@ class XLiveSplitterApp(ctk.CTk):
 
     # ---------------- Output ----------------
     def choose_output(self):
+        self._bring_to_front()
         path = filedialog.askdirectory(title="Choose output folder")
         if path:
             self.output_dir_override = path
@@ -674,6 +691,7 @@ class XLiveSplitterApp(ctk.CTk):
         self.daw_status_var.set(self._daw_status_text())
 
     def choose_daw_path(self):
+        self._bring_to_front()
         path = filedialog.askopenfilename(
             title="Select an application",
             initialdir="/Applications",
