@@ -1,0 +1,28 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller numpy customtkinter
+
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile --windowed --name "X32 Track Splitter" --collect-data customtkinter x32_track_splitter_windows.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: X32-Track-Splitter-exe
+          path: dist/X32 Track Splitter.exe
