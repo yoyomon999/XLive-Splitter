@@ -1,0 +1,82 @@
+#!/bin/bash
+# Launcher for X32 Track Splitter.app
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RESOURCES="$DIR/Resources"
+APP_SUPPORT="$HOME/Library/Application Support/X32 Track Splitter"
+VENV="$APP_SUPPORT/venv"
+SETUP_LOG="$APP_SUPPORT/setup.log"
+
+# GUI-launched apps don't source ~/.zshrc etc, so Homebrew's PATH entry isn't
+# present here even if it works fine in Terminal. Also: explicitly avoid
+# Apple's Command Line Tools Python — it links against the ancient system
+# Tcl/Tk 8.5 framework, which reliably crashes on Tk init on Apple Silicon
+# under Rosetta. Check known-good locations first, in priority order.
+CANDIDATES=(
+  "/opt/homebrew/bin/python3"
+  "/usr/local/bin/python3"
+  /Library/Frameworks/Python.framework/Versions/*/bin/python3
+  "$(command -v python3 2>/dev/null)"
+)
+
+find_good_python() {
+  for CAND in "${CANDIDATES[@]}"; do
+    for EXPANDED in $CAND; do
+      [ -x "$EXPANDED" ] || continue
+      case "$EXPANDED" in
+        *CommandLineTools*) continue ;;  # known-bad: ancient Tk 8.5, crashes
+      esac
+      # Must have tkinter, and Tk must be modern enough (8.6+) to be reliable.
+      TKVER="$("$EXPANDED" -c "import tkinter; print(tkinter.TkVersion)" 2>/dev/null)"
+      if [ -n "$TKVER" ]; then
+        MAJOR="${TKVER%%.*}"
+        MINOR="${TKVER#*.}"
+        MINOR="${MINOR%%.*}"
+        if [ "$MAJOR" -gt 8 ] 2>/dev/null || { [ "$MAJOR" -eq 8 ] 2>/dev/null && [ "$MINOR" -ge 6 ] 2>/dev/null; }; then
+          echo "$EXPANDED"
+          return 0
+        fi
+      fi
+    done
+  done
+  return 1
+}
+
+SYSTEM_PYTHON="$(find_good_python)"
+
+if [ -z "$SYSTEM_PYTHON" ]; then
+  osascript -e 'display alert "No Compatible Python Found" message "X32 Track Splitter needs a Python 3 with a modern Tk (8.6+) — the version bundled with Apple'\''s Command Line Tools is too old and will crash.\n\nEasiest fix: install Python from python.org (it bundles a working Tk), or if you use Homebrew:\n\nbrew install python-tk\n\nThen reopen this app." as critical'
+  exit 1
+fi
+
+mkdir -p "$APP_SUPPORT"
+
+# Create a private virtual environment on first run (or if it was built from a
+# different base interpreter than the one we just picked) so we can install
+# numpy without touching your system/Homebrew Python.
+NEEDS_VENV=1
+if [ -x "$VENV/bin/python3" ]; then
+  EXISTING_TKVER="$("$VENV/bin/python3" -c "import tkinter; print(tkinter.TkVersion)" 2>/dev/null)"
+  if [ -n "$EXISTING_TKVER" ]; then
+    NEEDS_VENV=0
+  fi
+fi
+
+if [ "$NEEDS_VENV" = "1" ]; then
+  osascript -e 'display notification "First launch — setting up (about 30 seconds)…" with title "X32 Track Splitter"'
+  rm -rf "$VENV"
+  if ! "$SYSTEM_PYTHON" -m venv "$VENV" >"$SETUP_LOG" 2>&1; then
+    osascript -e "display alert \"Setup Failed\" message \"Could not create the app's Python environment. Details were saved to:\n\n$SETUP_LOG\" as critical"
+    exit 1
+  fi
+fi
+
+if ! "$VENV/bin/python3" -c "import numpy" >/dev/null 2>&1; then
+  osascript -e 'display notification "Installing numpy (first launch only)…" with title "X32 Track Splitter"'
+  if ! "$VENV/bin/python3" -m pip install --quiet --upgrade pip numpy >"$SETUP_LOG" 2>&1; then
+    osascript -e "display alert \"Setup Failed\" message \"Could not install numpy — check your internet connection and try reopening the app. Details were saved to:\n\n$SETUP_LOG\" as critical"
+    exit 1
+  fi
+fi
+
+cd "$RESOURCES"
+exec "$VENV/bin/python3" "$RESOURCES/x32_track_splitter.py"
