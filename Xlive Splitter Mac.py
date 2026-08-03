@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-X32 Track Splitter (CustomTkinter Edition)
+XLive Splitter (CustomTkinter Edition)
 -------------------
 Takes the single interleaved multitrack WAV file recorded by an X32 / X-Live
 card and exports each channel as its own named mono WAV file, using reusable
 named presets (e.g. "Sunday Service", "Band Rehearsal Setup").
 
 Requires: Python 3.9+, numpy, customtkinter
-Run:      python3 x32_track_splitter.py
+Run:      python3 xlive_splitter_mac.py
 """
 
 import json
@@ -175,13 +175,21 @@ def format_duration(frames, sample_rate):
 
 
 # ============================================================================
-# Presets
+# Presets / Config
 # ============================================================================
 
-def presets_path():
-    base = os.path.expanduser("~/Library/Application Support/X32 Track Splitter")
+def app_support_dir():
+    base = os.path.expanduser("~/Library/Application Support/XLive Splitter")
     os.makedirs(base, exist_ok=True)
-    return os.path.join(base, "presets.json")
+    return base
+
+
+def presets_path():
+    return os.path.join(app_support_dir(), "presets.json")
+
+
+def config_path():
+    return os.path.join(app_support_dir(), "config.json")
 
 
 def load_presets():
@@ -200,20 +208,42 @@ def save_presets(presets):
         json.dump(presets, f, indent=2)
 
 
+def load_config():
+    path = config_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_config(cfg):
+    with open(config_path(), "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+# ============================================================================
+# DAW registry (macOS)
+# ============================================================================
+DAW_NAMES = ["Logic Pro", "Ableton Live", "GarageBand", "Pro Tools", "Reaper", "Studio One", "Cubase", "Custom…"]
+
+
 # ============================================================================
 # GUI
 # ============================================================================
 
-class X32SplitterApp(ctk.CTk):
+class XLiveSplitterApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
         # Color Palette
         self.DARK_SLATE = "#2C3E50"
-        self.CARD_BG = "#34495E"      # Layered lighter background for cards
-        self.MUTED_BTN = "#435B71"    # Accent Restraint: Subtle dark gray buttons
+        self.CARD_BG = "#34495E"
+        self.MUTED_BTN = "#435B71"
         self.MUTED_HOVER = "#54718C"
-        self.RUST_RED = "#C0392B"     # Reserved for Primary Actions
+        self.RUST_RED = "#C0392B"
         self.SILVER = "#BDC3C7"
         self.WARM_CREAM = "#F4F3ED"
         self.COOL_WHITE = "#EAECEE"
@@ -227,14 +257,23 @@ class X32SplitterApp(ctk.CTk):
         # Theme Initialization
         ctk.set_appearance_mode("dark")
         self.configure(fg_color=self.DARK_SLATE)
-        self.title("X32 Track Splitter")
-        self.geometry("680x820")
-        self.minsize(600, 640)
+        self.title("XLive Splitter")
+        self.geometry("680x960")
+        self.minsize(600, 760)
 
         self.source_paths = []
         self.wav_format = None
         self.name_vars = []
         self.presets = load_presets()
+        self.config = load_config()
+
+        self.daw_choice = self.config.get("daw_choice", "Logic Pro")
+        if self.daw_choice not in DAW_NAMES:
+            self.daw_choice = "Logic Pro"
+        self.daw_path = self.config.get("daw_path") 
+        self.auto_open_folder = self.config.get("auto_open_folder", True)
+        self.auto_open_daw = self.config.get("auto_open_daw", True)
+
         self.export_thread = None
         self.cancel_flag = None
         self.progress_queue = queue.Queue()
@@ -244,21 +283,14 @@ class X32SplitterApp(ctk.CTk):
     def _build_ui(self):
         pad = {"padx": 16, "pady": 10}
 
-        # --- Base styling configs for widgets ---
         btn_kwargs = {"fg_color": self.MUTED_BTN, "text_color": self.COOL_WHITE, "hover_color": self.MUTED_HOVER, "font": self.font_bold}
         label_kwargs = {"text_color": self.WARM_CREAM, "font": self.font_main}
-        title_kwargs = {"text_color": self.COOL_WHITE, "font": self.font_title}
         
-        # Card-based Design: No borders, rounded corners, layered color depth
         frame_kwargs = {"fg_color": self.CARD_BG, "corner_radius": 8}
 
-        # ==========================================
-        # 1. Source Section (Collapsible)
-        # ==========================================
+        # --- 1. Source Section ---
         src_frame = ctk.CTkFrame(self, **frame_kwargs)
-        
         self.src_expanded = True
-        
         self.src_header_btn = ctk.CTkButton(src_frame, text="▼ 1. Source Recording", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
                                             hover_color=self.MUTED_BTN, anchor="w", 
@@ -276,19 +308,13 @@ class X32SplitterApp(ctk.CTk):
         self.source_list_frame = ctk.CTkScrollableFrame(self.src_content_frame, fg_color=self.DARK_SLATE, height=100, corner_radius=6)
         self.source_list_frame.pack(fill="x", padx=12, pady=(0, 8))
         
-        self.refresh_source_list() # Loads the placeholder text initially
-
+        self.refresh_source_list() 
         self.format_label = ctk.CTkLabel(self.src_content_frame, text="", text_color=self.SILVER, font=self.font_small)
         self.format_label.pack(fill="x", padx=12, pady=(0, 10))
 
-
-        # ==========================================
-        # 2. Preset Section (Collapsible)
-        # ==========================================
+        # --- 2. Preset Section ---
         preset_frame = ctk.CTkFrame(self, **frame_kwargs)
-        
         self.preset_expanded = True
-        
         self.preset_header_btn = ctk.CTkButton(preset_frame, text="▼ 2. Track Names", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
                                             hover_color=self.MUTED_BTN, anchor="w", 
@@ -313,21 +339,15 @@ class X32SplitterApp(ctk.CTk):
         ctk.CTkButton(prow, text="💾 Save As…", command=self.save_preset_as, width=80, **btn_kwargs).pack(side="left", padx=4)
         ctk.CTkButton(prow, text="🗑 Delete", command=self.delete_preset, width=70, **btn_kwargs).pack(side="left", padx=4)
 
-        # Inset dark slate area for tracks
         self.rows_frame = ctk.CTkScrollableFrame(self.preset_content_frame, fg_color=self.DARK_SLATE, corner_radius=6)
         self.rows_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
         self.placeholder_label = ctk.CTkLabel(self.rows_frame, text="Choose a source file to see channel rows here.", text_color=self.SILVER, font=self.font_small)
         self.placeholder_label.pack(padx=6, pady=20)
 
-
-        # ==========================================
-        # 3. Output Section (Collapsible)
-        # ==========================================
+        # --- 3. Output Section ---
         out_frame = ctk.CTkFrame(self, **frame_kwargs)
-        
         self.out_expanded = True
-        
         self.out_header_btn = ctk.CTkButton(out_frame, text="▼ 3. Output", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
                                             hover_color=self.MUTED_BTN, anchor="w", 
@@ -344,12 +364,48 @@ class X32SplitterApp(ctk.CTk):
         self.output_var = ctk.StringVar(value="(same folder as source, in a new subfolder)")
         ctk.CTkLabel(orow, textvariable=self.output_var, text_color=self.SILVER, font=self.font_small, wraplength=400).pack(side="left", padx=12)
 
+        # --- 4. After Export ---
+        automation_frame = ctk.CTkFrame(self, **frame_kwargs)
+        self.automation_expanded = True
+        self.automation_header_btn = ctk.CTkButton(automation_frame, text="▼ 4. After Export", font=self.font_title,
+                                            text_color=self.COOL_WHITE, fg_color="transparent",
+                                            hover_color=self.MUTED_BTN, anchor="w",
+                                            command=self.toggle_automation)
+        self.automation_header_btn.pack(fill="x", padx=6, pady=6)
 
-        # ==========================================
-        # 4. Export (Action reserved for Rust Red)
-        # ==========================================
+        self.automation_content_frame = ctk.CTkFrame(automation_frame, fg_color="transparent")
+        self.automation_content_frame.pack(fill="x", padx=12, pady=(0, 10))
+
+        self.auto_open_folder_var = ctk.BooleanVar(value=self.auto_open_folder)
+        ctk.CTkCheckBox(self.automation_content_frame, text="Open output folder in Finder",
+                         variable=self.auto_open_folder_var, text_color=self.WARM_CREAM, font=self.font_main,
+                         command=self.on_toggle_auto_open_folder).pack(anchor="w", pady=(4, 4))
+
+        self.auto_open_daw_var = ctk.BooleanVar(value=self.auto_open_daw)
+        ctk.CTkCheckBox(self.automation_content_frame, text="Open exported tracks in a DAW",
+                         variable=self.auto_open_daw_var, text_color=self.WARM_CREAM, font=self.font_main,
+                         command=self.on_toggle_auto_open_daw).pack(anchor="w", pady=(4, 8))
+
+        drow = ctk.CTkFrame(self.automation_content_frame, fg_color="transparent")
+        drow.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(drow, text="DAW:", text_color=self.WARM_CREAM, font=self.font_main).pack(side="left")
+        self.daw_var = ctk.StringVar(value=self.daw_choice)
+        self.daw_combo = ctk.CTkComboBox(drow, variable=self.daw_var, values=DAW_NAMES, state="readonly",
+                                          fg_color=self.DARK_SLATE, text_color=self.COOL_WHITE, button_color=self.MUTED_BTN,
+                                          button_hover_color=self.MUTED_HOVER, dropdown_fg_color=self.CARD_BG,
+                                          dropdown_text_color=self.COOL_WHITE, width=180, font=self.font_main,
+                                          command=self.on_daw_selected)
+        self.daw_combo.pack(side="left", padx=(8, 12))
+        self.daw_locate_btn = ctk.CTkButton(drow, text="📁 Locate…", command=self.choose_daw_path, width=90, **btn_kwargs)
+        self.daw_locate_btn.pack(side="left")
+        self.daw_locate_btn.configure(state=("normal" if self.daw_choice == "Custom…" else "disabled"))
+
+        self.daw_status_var = ctk.StringVar(value=self._daw_status_text())
+        ctk.CTkLabel(self.automation_content_frame, textvariable=self.daw_status_var, text_color=self.SILVER,
+                     font=self.font_small, wraplength=560, justify="left").pack(anchor="w", pady=(4, 0))
+
+        # --- 5. Export ---
         export_frame = ctk.CTkFrame(self, fg_color="transparent")
-        
         self.export_button = ctk.CTkButton(export_frame, text="⚙️ Export Tracks", command=self.start_export, state="disabled",
                                            fg_color=self.RUST_RED, text_color=self.WARM_CREAM, hover_color="#A93226", 
                                            font=ctk.CTkFont(family="SF Pro Display", size=15, weight="bold"), height=40)
@@ -362,11 +418,10 @@ class X32SplitterApp(ctk.CTk):
         self.status_label = ctk.CTkLabel(export_frame, text="", text_color=self.SILVER, font=self.font_small)
         self.status_label.pack(fill="x")
 
-        # ==========================================
-        # Layout Order Fix (The "Pack Order Trick")
-        # ==========================================
+        # --- Layout Order ---
         src_frame.pack(side="top", fill="x", **pad)
         export_frame.pack(side="bottom", fill="x", **pad)
+        automation_frame.pack(side="bottom", fill="x", **pad)
         out_frame.pack(side="bottom", fill="x", **pad)
         preset_frame.pack(side="top", fill="both", expand=True, **pad)
         
@@ -403,11 +458,20 @@ class X32SplitterApp(ctk.CTk):
             self.out_header_btn.configure(text="▼ 3. Output")
             self.out_expanded = True
 
+    def toggle_automation(self):
+        if self.automation_expanded:
+            self.automation_content_frame.pack_forget()
+            self.automation_header_btn.configure(text="▶ 4. After Export")
+            self.automation_expanded = False
+        else:
+            self.automation_content_frame.pack(fill="x", padx=12, pady=(0, 10))
+            self.automation_header_btn.configure(text="▼ 4. After Export")
+            self.automation_expanded = True
 
     # ---------------- Source File Handling ----------------
     def choose_source(self):
         paths = filedialog.askopenfilenames(
-            title="Select X32 multitrack WAV file(s)",
+            title="Select XLive multitrack WAV file(s)",
             filetypes=[("WAV files", "*.wav *.WAV"), ("All files", "*.*")]
         )
         if not paths:
@@ -426,17 +490,14 @@ class X32SplitterApp(ctk.CTk):
             self.output_var.set(f"Default: {default_out}")
 
     def refresh_source_list(self):
-        # Clear existing rows
         for child in self.source_list_frame.winfo_children():
             child.destroy()
             
-        # Display placeholder if empty
         if not self.source_paths:
             placeholder = ctk.CTkLabel(self.source_list_frame, text="No files selected.", text_color=self.SILVER, font=self.font_small)
             placeholder.pack(pady=15)
             return
 
-        # Build custom UI rows with inline buttons
         for idx, p in enumerate(self.source_paths):
             row = ctk.CTkFrame(self.source_list_frame, fg_color="transparent")
             row.pack(fill="x", pady=2)
@@ -444,7 +505,6 @@ class X32SplitterApp(ctk.CTk):
             lbl = ctk.CTkLabel(row, text=os.path.basename(p), font=self.font_main, text_color=self.COOL_WHITE)
             lbl.pack(side="left", padx=5)
 
-            # Red hover reserved for destructive actions
             btn_del = ctk.CTkButton(row, text="⨂", width=28, height=28, fg_color="transparent", hover_color=self.RUST_RED, text_color=self.SILVER, font=self.font_bold, command=lambda i=idx: self.remove_source(i))
             btn_del.pack(side="right", padx=2)
 
@@ -531,11 +591,9 @@ class X32SplitterApp(ctk.CTk):
             default = preset_names[i] if preset_names else f"Track {i+1:02d}"
             var = ctk.StringVar(value=default)
             
-            # Flush entry fields inside the dark frame
             entry = ctk.CTkEntry(row, textvariable=var, fg_color=self.CARD_BG, text_color=self.COOL_WHITE, font=self.font_main, border_width=0)
             entry.pack(side="left", padx=(10, 0), fill="x", expand=True)
             self.name_vars.append(var)
-
 
     # ---------------- Presets ----------------
     def load_preset(self):
@@ -590,6 +648,46 @@ class X32SplitterApp(ctk.CTk):
         if path:
             self.output_dir_override = path
             self.output_var.set(path)
+
+    # ---------------- DAW selection / automation toggles ----------------
+    def _daw_status_text(self):
+        if self.daw_choice == "Custom…":
+            return f"Will open: {self.daw_path}" if self.daw_path else "Click Locate… to choose an app."
+        return f"Will open: {self.daw_choice} (launched by name — must be installed in Applications)"
+
+    def on_daw_selected(self, choice):
+        self.daw_choice = choice
+        self.config["daw_choice"] = choice
+        if choice != "Custom…":
+            self.daw_locate_btn.configure(state="disabled")
+        else:
+            self.daw_locate_btn.configure(state="normal")
+        save_config(self.config)
+        self.daw_status_var.set(self._daw_status_text())
+
+    def choose_daw_path(self):
+        path = filedialog.askopenfilename(
+            title="Select an application",
+            initialdir="/Applications",
+            filetypes=[("Applications", "*.app"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+        self.daw_path = path
+        self.config["daw_choice"] = "Custom…"
+        self.config["daw_path"] = path
+        save_config(self.config)
+        self.daw_status_var.set(self._daw_status_text())
+
+    def on_toggle_auto_open_folder(self):
+        self.auto_open_folder = self.auto_open_folder_var.get()
+        self.config["auto_open_folder"] = self.auto_open_folder
+        save_config(self.config)
+
+    def on_toggle_auto_open_daw(self):
+        self.auto_open_daw = self.auto_open_daw_var.get()
+        self.config["auto_open_daw"] = self.auto_open_daw
+        save_config(self.config)
 
     # ---------------- Export ----------------
     def start_export(self):
@@ -646,8 +744,10 @@ class X32SplitterApp(ctk.CTk):
                     self.progress.set(1)
                     self.status_label.configure(text=f"Done — {len(out_paths)} files written.")
                     self.export_button.configure(state="normal", text="⚙️ Export Tracks")
-                    self.reveal_in_finder(out_dir)
-                    self.open_in_logic(out_paths)
+                    if self.auto_open_folder:
+                        self.reveal_in_finder(out_dir)
+                    if self.auto_open_daw:
+                        self.open_in_daw(out_paths)
                     return
                 elif kind == "cancelled":
                     self.status_label.configure(text="Cancelled.")
@@ -668,14 +768,25 @@ class X32SplitterApp(ctk.CTk):
         except Exception:
             pass
 
-    def open_in_logic(self, out_paths):
+    def open_in_daw(self, out_paths):
         try:
-            # Tells macOS to open all the exported files using Logic Pro
-            subprocess.run(["open", "-a", "Logic Pro"] + out_paths)
+            if self.daw_choice == "Custom…":
+                if not self.daw_path or not os.path.exists(self.daw_path):
+                    messagebox.showinfo(
+                        "No app selected",
+                        "Your tracks were exported successfully. Use the 'Locate…' button "
+                        "in the After Export section to choose an app, then export again to "
+                        "have them open automatically next time."
+                    )
+                    return
+                subprocess.run(["open", "-a", self.daw_path] + out_paths)
+            else:
+                subprocess.run(["open", "-a", self.daw_choice] + out_paths)
         except Exception as e:
-            print(f"Could not open in Logic: {e}")
+            messagebox.showwarning(f"Couldn't open {self.daw_choice}", str(e))
+            print(f"Could not open in {self.daw_choice}: {e}")
 
 
 if __name__ == "__main__":
-    app = X32SplitterApp()
+    app = XLiveSplitterApp()
     app.mainloop()
