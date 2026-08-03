@@ -1,10 +1,10 @@
-name: Build Windows EXE
+name: Build EXE and macOS App
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,8 +21,36 @@ jobs:
         run: |
           pyinstaller --onefile --windowed --name "X32 Track Splitter" --collect-data customtkinter x32_track_splitter_windows.py
 
-      - name: Upload artifact
+      - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: X32-Track-Splitter-exe
+          name: X32-Track-Splitter-Windows
           path: dist/X32 Track Splitter.exe
+
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller numpy customtkinter
+
+      - name: Build App
+        run: |
+          pyinstaller --windowed --name "X32 Track Splitter" --collect-data customtkinter x32_track_splitter.py
+
+      - name: Zip the app bundle
+        run: |
+          cd dist
+          zip -r "X32 Track Splitter.app.zip" "X32 Track Splitter.app"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: X32-Track-Splitter-macOS
+          path: dist/X32 Track Splitter.app.zip
