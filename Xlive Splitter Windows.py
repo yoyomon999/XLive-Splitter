@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-X32 Track Splitter (Windows / Ableton Edition)
+XLive Splitter (Windows Edition)
 -------------------
 Takes the single interleaved multitrack WAV file recorded by an X32 / X-Live
 card and exports each channel as its own named mono WAV file, using reusable
 named presets (e.g. "Sunday Service", "Band Rehearsal Setup").
 
 After export, it reveals the output folder in File Explorer and hands the
-exported WAV files to Ableton Live (drag-and-drop-onto-the-.exe style),
-which creates a new Live Set with each file loaded as a clip.
+exported WAV files to your selected DAW (drag-and-drop-onto-the-.exe style),
+which creates a new project with each file loaded as a clip.
 
 Requires: Python 3.9+, numpy, customtkinter, Windows 10/11
-Run:      python x32_track_splitter_windows.py
+Run:      python xlive_splitter_windows.py
 """
 
 import glob
@@ -185,7 +185,7 @@ def format_duration(frames, sample_rate):
 
 def app_support_dir():
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    path = os.path.join(base, "X32 Track Splitter")
+    path = os.path.join(base, "XLive Splitter")
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -231,49 +231,102 @@ def save_config(cfg):
 
 
 # ============================================================================
-# Ableton Live discovery (Windows)
+# DAW discovery (Windows)
 # ============================================================================
 
-def find_ableton_executable():
-    """Best-effort search for an installed Ableton Live.exe on Windows."""
-    search_roots = [
-        os.environ.get("PROGRAMDATA", r"C:\ProgramData"),
-        os.environ.get("PROGRAMFILES", r"C:\Program Files"),
-        os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+def _program_roots():
+    return [
+        r for r in [
+            os.environ.get("PROGRAMDATA", r"C:\ProgramData"),
+            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+        ] if r and os.path.isdir(r)
     ]
-    candidates = []
-    for root in search_roots:
-        if not root or not os.path.isdir(root):
-            continue
-        pattern = os.path.join(root, "Ableton", "Live *", "Program", "Ableton Live*.exe")
-        candidates.extend(glob.glob(pattern))
 
+
+def _glob_all(patterns):
+    hits = []
+    for root in _program_roots():
+        for pattern in patterns:
+            hits.extend(glob.glob(os.path.join(root, pattern)))
+    return hits
+
+
+def _find_ableton():
+    candidates = _glob_all([os.path.join("Ableton", "Live *", "Program", "Ableton Live*.exe")])
     if not candidates:
         return None
-
-    # Prefer the highest version number found (e.g. "Live 12" over "Live 10")
     def version_key(path):
         m = re.search(r"Live (\d+)", path)
         return int(m.group(1)) if m else 0
-
     candidates.sort(key=version_key, reverse=True)
     return candidates[0]
+
+
+def _find_reaper():
+    candidates = _glob_all([os.path.join("REAPER (x64)", "reaper.exe"), os.path.join("REAPER", "reaper.exe")])
+    return candidates[0] if candidates else None
+
+
+def _find_fl_studio():
+    candidates = _glob_all([os.path.join("Image-Line", "FL Studio *", "FL64.exe")])
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0]
+
+
+def _find_studio_one():
+    candidates = _glob_all([os.path.join("PreSonus", "Studio One *", "Studio One.exe")])
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0]
+
+
+def _find_cubase():
+    candidates = _glob_all([os.path.join("Steinberg", "Cubase *", "Cubase*.exe")])
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0]
+
+
+def _find_pro_tools():
+    candidates = _glob_all([os.path.join("Avid", "Pro Tools", "Pro Tools.exe")])
+    return candidates[0] if candidates else None
+
+
+DAW_REGISTRY = {
+    "Ableton Live": _find_ableton,
+    "Reaper": _find_reaper,
+    "FL Studio": _find_fl_studio,
+    "Studio One": _find_studio_one,
+    "Cubase": _find_cubase,
+    "Pro Tools": _find_pro_tools,
+    "Custom…": lambda: None,
+}
+
+
+def find_daw_executable(name):
+    finder = DAW_REGISTRY.get(name)
+    return finder() if finder else None
 
 
 # ============================================================================
 # GUI
 # ============================================================================
 
-class X32SplitterApp(ctk.CTk):
+class XLiveSplitterApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
         # Color Palette
         self.DARK_SLATE = "#2C3E50"
-        self.CARD_BG = "#34495E"      # Layered lighter background for cards
-        self.MUTED_BTN = "#435B71"    # Accent Restraint: Subtle dark gray buttons
+        self.CARD_BG = "#34495E"
+        self.MUTED_BTN = "#435B71"
         self.MUTED_HOVER = "#54718C"
-        self.RUST_RED = "#C0392B"     # Reserved for Primary Actions
+        self.RUST_RED = "#C0392B"
         self.SILVER = "#BDC3C7"
         self.WARM_CREAM = "#F4F3ED"
         self.COOL_WHITE = "#EAECEE"
@@ -287,18 +340,25 @@ class X32SplitterApp(ctk.CTk):
         # Theme Initialization
         ctk.set_appearance_mode("dark")
         self.configure(fg_color=self.DARK_SLATE)
-        self.title("X32 Track Splitter")
-        self.geometry("680x860")
-        self.minsize(600, 680)
+        self.title("XLive Splitter")
+        self.geometry("680x960")
+        self.minsize(600, 760)
 
         self.source_paths = []
         self.wav_format = None
         self.name_vars = []
         self.presets = load_presets()
         self.config = load_config()
-        self.ableton_path = self.config.get("ableton_path") or find_ableton_executable()
-        if self.ableton_path and not os.path.exists(self.ableton_path):
-            self.ableton_path = find_ableton_executable()
+
+        self.daw_choice = self.config.get("daw_choice", "Ableton Live")
+        if self.daw_choice not in DAW_REGISTRY:
+            self.daw_choice = "Ableton Live"
+        self.daw_path = self.config.get("daw_path") or find_daw_executable(self.daw_choice)
+        if self.daw_path and not os.path.exists(self.daw_path):
+            self.daw_path = find_daw_executable(self.daw_choice)
+        self.auto_open_folder = self.config.get("auto_open_folder", True)
+        self.auto_open_daw = self.config.get("auto_open_daw", True)
+
         self.export_thread = None
         self.cancel_flag = None
         self.progress_queue = queue.Queue()
@@ -308,21 +368,14 @@ class X32SplitterApp(ctk.CTk):
     def _build_ui(self):
         pad = {"padx": 16, "pady": 10}
 
-        # --- Base styling configs for widgets ---
         btn_kwargs = {"fg_color": self.MUTED_BTN, "text_color": self.COOL_WHITE, "hover_color": self.MUTED_HOVER, "font": self.font_bold}
         label_kwargs = {"text_color": self.WARM_CREAM, "font": self.font_main}
-        title_kwargs = {"text_color": self.COOL_WHITE, "font": self.font_title}
         
-        # Card-based Design: No borders, rounded corners, layered color depth
         frame_kwargs = {"fg_color": self.CARD_BG, "corner_radius": 8}
 
-        # ==========================================
-        # 1. Source Section (Collapsible)
-        # ==========================================
+        # --- 1. Source Section ---
         src_frame = ctk.CTkFrame(self, **frame_kwargs)
-        
         self.src_expanded = True
-        
         self.src_header_btn = ctk.CTkButton(src_frame, text="▼ 1. Source Recording", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
                                             hover_color=self.MUTED_BTN, anchor="w", 
@@ -340,19 +393,14 @@ class X32SplitterApp(ctk.CTk):
         self.source_list_frame = ctk.CTkScrollableFrame(self.src_content_frame, fg_color=self.DARK_SLATE, height=100, corner_radius=6)
         self.source_list_frame.pack(fill="x", padx=12, pady=(0, 8))
         
-        self.refresh_source_list() # Loads the placeholder text initially
+        self.refresh_source_list() 
 
         self.format_label = ctk.CTkLabel(self.src_content_frame, text="", text_color=self.SILVER, font=self.font_small)
         self.format_label.pack(fill="x", padx=12, pady=(0, 10))
 
-
-        # ==========================================
-        # 2. Preset Section (Collapsible)
-        # ==========================================
+        # --- 2. Preset Section ---
         preset_frame = ctk.CTkFrame(self, **frame_kwargs)
-        
         self.preset_expanded = True
-        
         self.preset_header_btn = ctk.CTkButton(preset_frame, text="▼ 2. Track Names", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
                                             hover_color=self.MUTED_BTN, anchor="w", 
@@ -377,21 +425,15 @@ class X32SplitterApp(ctk.CTk):
         ctk.CTkButton(prow, text="💾 Save As…", command=self.save_preset_as, width=80, **btn_kwargs).pack(side="left", padx=4)
         ctk.CTkButton(prow, text="🗑 Delete", command=self.delete_preset, width=70, **btn_kwargs).pack(side="left", padx=4)
 
-        # Inset dark slate area for tracks
         self.rows_frame = ctk.CTkScrollableFrame(self.preset_content_frame, fg_color=self.DARK_SLATE, corner_radius=6)
         self.rows_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
         self.placeholder_label = ctk.CTkLabel(self.rows_frame, text="Choose a source file to see channel rows here.", text_color=self.SILVER, font=self.font_small)
         self.placeholder_label.pack(padx=6, pady=20)
 
-
-        # ==========================================
-        # 3. Output Section (Collapsible)
-        # ==========================================
+        # --- 3. Output Section ---
         out_frame = ctk.CTkFrame(self, **frame_kwargs)
-        
         self.out_expanded = True
-        
         self.out_header_btn = ctk.CTkButton(out_frame, text="▼ 3. Output", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
                                             hover_color=self.MUTED_BTN, anchor="w", 
@@ -408,16 +450,45 @@ class X32SplitterApp(ctk.CTk):
         self.output_var = ctk.StringVar(value="(same folder as source, in a new subfolder)")
         ctk.CTkLabel(orow, textvariable=self.output_var, text_color=self.SILVER, font=self.font_small, wraplength=400).pack(side="left", padx=12)
 
-        arow = ctk.CTkFrame(self.out_content_frame, fg_color="transparent")
-        arow.pack(fill="x", pady=(10, 0))
-        ctk.CTkButton(arow, text="🎚 Locate Ableton Live…", command=self.choose_ableton_path, **btn_kwargs).pack(side="left")
-        self.ableton_var = ctk.StringVar(value=self._ableton_status_text())
-        ctk.CTkLabel(arow, textvariable=self.ableton_var, text_color=self.SILVER, font=self.font_small, wraplength=380).pack(side="left", padx=12)
+        # --- 4. After Export ---
+        automation_frame = ctk.CTkFrame(self, **frame_kwargs)
+        self.automation_expanded = True
+        self.automation_header_btn = ctk.CTkButton(automation_frame, text="▼ 4. After Export", font=self.font_title,
+                                            text_color=self.COOL_WHITE, fg_color="transparent",
+                                            hover_color=self.MUTED_BTN, anchor="w",
+                                            command=self.toggle_automation)
+        self.automation_header_btn.pack(fill="x", padx=6, pady=6)
 
+        self.automation_content_frame = ctk.CTkFrame(automation_frame, fg_color="transparent")
+        self.automation_content_frame.pack(fill="x", padx=12, pady=(0, 10))
 
-        # ==========================================
-        # 4. Export (Action reserved for Rust Red)
-        # ==========================================
+        self.auto_open_folder_var = ctk.BooleanVar(value=self.auto_open_folder)
+        ctk.CTkCheckBox(self.automation_content_frame, text="Open output folder in File Explorer",
+                         variable=self.auto_open_folder_var, text_color=self.WARM_CREAM, font=self.font_main,
+                         command=self.on_toggle_auto_open_folder).pack(anchor="w", pady=(4, 4))
+
+        self.auto_open_daw_var = ctk.BooleanVar(value=self.auto_open_daw)
+        ctk.CTkCheckBox(self.automation_content_frame, text="Open exported tracks in a DAW",
+                         variable=self.auto_open_daw_var, text_color=self.WARM_CREAM, font=self.font_main,
+                         command=self.on_toggle_auto_open_daw).pack(anchor="w", pady=(4, 8))
+
+        drow = ctk.CTkFrame(self.automation_content_frame, fg_color="transparent")
+        drow.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(drow, text="DAW:", text_color=self.WARM_CREAM, font=self.font_main).pack(side="left")
+        self.daw_var = ctk.StringVar(value=self.daw_choice)
+        self.daw_combo = ctk.CTkComboBox(drow, variable=self.daw_var, values=list(DAW_REGISTRY.keys()), state="readonly",
+                                          fg_color=self.DARK_SLATE, text_color=self.COOL_WHITE, button_color=self.MUTED_BTN,
+                                          button_hover_color=self.MUTED_HOVER, dropdown_fg_color=self.CARD_BG,
+                                          dropdown_text_color=self.COOL_WHITE, width=180, font=self.font_main,
+                                          command=self.on_daw_selected)
+        self.daw_combo.pack(side="left", padx=(8, 12))
+        ctk.CTkButton(drow, text="📁 Locate…", command=self.choose_daw_path, width=90, **btn_kwargs).pack(side="left")
+
+        self.daw_status_var = ctk.StringVar(value=self._daw_status_text())
+        ctk.CTkLabel(self.automation_content_frame, textvariable=self.daw_status_var, text_color=self.SILVER,
+                     font=self.font_small, wraplength=560, justify="left").pack(anchor="w", pady=(4, 0))
+
+        # --- 5. Export ---
         export_frame = ctk.CTkFrame(self, fg_color="transparent")
         
         self.export_button = ctk.CTkButton(export_frame, text="⚙️ Export Tracks", command=self.start_export, state="disabled",
@@ -432,11 +503,10 @@ class X32SplitterApp(ctk.CTk):
         self.status_label = ctk.CTkLabel(export_frame, text="", text_color=self.SILVER, font=self.font_small)
         self.status_label.pack(fill="x")
 
-        # ==========================================
-        # Layout Order Fix (The "Pack Order Trick")
-        # ==========================================
+        # --- Layout Order ---
         src_frame.pack(side="top", fill="x", **pad)
         export_frame.pack(side="bottom", fill="x", **pad)
+        automation_frame.pack(side="bottom", fill="x", **pad)
         out_frame.pack(side="bottom", fill="x", **pad)
         preset_frame.pack(side="top", fill="both", expand=True, **pad)
         
@@ -473,11 +543,20 @@ class X32SplitterApp(ctk.CTk):
             self.out_header_btn.configure(text="▼ 3. Output")
             self.out_expanded = True
 
+    def toggle_automation(self):
+        if self.automation_expanded:
+            self.automation_content_frame.pack_forget()
+            self.automation_header_btn.configure(text="▶ 4. After Export")
+            self.automation_expanded = False
+        else:
+            self.automation_content_frame.pack(fill="x", padx=12, pady=(0, 10))
+            self.automation_header_btn.configure(text="▼ 4. After Export")
+            self.automation_expanded = True
 
     # ---------------- Source File Handling ----------------
     def choose_source(self):
         paths = filedialog.askopenfilenames(
-            title="Select X32 multitrack WAV file(s)",
+            title="Select XLive multitrack WAV file(s)",
             filetypes=[("WAV files", "*.wav *.WAV"), ("All files", "*.*")]
         )
         if not paths:
@@ -496,17 +575,14 @@ class X32SplitterApp(ctk.CTk):
             self.output_var.set(f"Default: {default_out}")
 
     def refresh_source_list(self):
-        # Clear existing rows
         for child in self.source_list_frame.winfo_children():
             child.destroy()
             
-        # Display placeholder if empty
         if not self.source_paths:
             placeholder = ctk.CTkLabel(self.source_list_frame, text="No files selected.", text_color=self.SILVER, font=self.font_small)
             placeholder.pack(pady=15)
             return
 
-        # Build custom UI rows with inline buttons
         for idx, p in enumerate(self.source_paths):
             row = ctk.CTkFrame(self.source_list_frame, fg_color="transparent")
             row.pack(fill="x", pady=2)
@@ -514,7 +590,6 @@ class X32SplitterApp(ctk.CTk):
             lbl = ctk.CTkLabel(row, text=os.path.basename(p), font=self.font_main, text_color=self.COOL_WHITE)
             lbl.pack(side="left", padx=5)
 
-            # Red hover reserved for destructive actions
             btn_del = ctk.CTkButton(row, text="⨂", width=28, height=28, fg_color="transparent", hover_color=self.RUST_RED, text_color=self.SILVER, font=self.font_bold, command=lambda i=idx: self.remove_source(i))
             btn_del.pack(side="right", padx=2)
 
@@ -601,11 +676,9 @@ class X32SplitterApp(ctk.CTk):
             default = preset_names[i] if preset_names else f"Track {i+1:02d}"
             var = ctk.StringVar(value=default)
             
-            # Flush entry fields inside the dark frame
             entry = ctk.CTkEntry(row, textvariable=var, fg_color=self.CARD_BG, text_color=self.COOL_WHITE, font=self.font_main, border_width=0)
             entry.pack(side="left", padx=(10, 0), fill="x", expand=True)
             self.name_vars.append(var)
-
 
     # ---------------- Presets ----------------
     def load_preset(self):
@@ -661,23 +734,42 @@ class X32SplitterApp(ctk.CTk):
             self.output_dir_override = path
             self.output_var.set(path)
 
-    # ---------------- Ableton Live path ----------------
-    def _ableton_status_text(self):
-        if self.ableton_path:
-            return f"Will open: {self.ableton_path}"
-        return "Ableton Live not found automatically — click Locate to select it."
+    # ---------------- DAW selection / automation toggles ----------------
+    def _daw_status_text(self):
+        if self.daw_path:
+            return f"Will open: {self.daw_path}"
+        return f"{self.daw_choice} not found automatically — click Locate… to select its .exe."
 
-    def choose_ableton_path(self):
+    def on_daw_selected(self, choice):
+        self.daw_choice = choice
+        self.daw_path = find_daw_executable(choice)
+        self.config["daw_choice"] = self.daw_choice
+        self.config["daw_path"] = self.daw_path
+        save_config(self.config)
+        self.daw_status_var.set(self._daw_status_text())
+
+    def choose_daw_path(self):
         path = filedialog.askopenfilename(
-            title="Select Ableton Live.exe",
-            filetypes=[("Ableton Live", "Ableton Live*.exe"), ("Executable", "*.exe"), ("All files", "*.*")]
+            title=f"Select {self.daw_choice} executable",
+            filetypes=[("Executable", "*.exe"), ("All files", "*.*")]
         )
         if not path:
             return
-        self.ableton_path = path
-        self.config["ableton_path"] = path
+        self.daw_path = path
+        self.config["daw_choice"] = self.daw_choice
+        self.config["daw_path"] = path
         save_config(self.config)
-        self.ableton_var.set(self._ableton_status_text())
+        self.daw_status_var.set(self._daw_status_text())
+
+    def on_toggle_auto_open_folder(self):
+        self.auto_open_folder = self.auto_open_folder_var.get()
+        self.config["auto_open_folder"] = self.auto_open_folder
+        save_config(self.config)
+
+    def on_toggle_auto_open_daw(self):
+        self.auto_open_daw = self.auto_open_daw_var.get()
+        self.config["auto_open_daw"] = self.auto_open_daw
+        save_config(self.config)
 
     # ---------------- Export ----------------
     def start_export(self):
@@ -734,8 +826,10 @@ class X32SplitterApp(ctk.CTk):
                     self.progress.set(1)
                     self.status_label.configure(text=f"Done — {len(out_paths)} files written.")
                     self.export_button.configure(state="normal", text="⚙️ Export Tracks")
-                    self.reveal_in_explorer(out_dir)
-                    self.open_in_ableton(out_paths)
+                    if self.auto_open_folder:
+                        self.reveal_in_explorer(out_dir)
+                    if self.auto_open_daw:
+                        self.open_in_daw(out_paths)
                     return
                 elif kind == "cancelled":
                     self.status_label.configure(text="Cancelled.")
@@ -759,25 +853,22 @@ class X32SplitterApp(ctk.CTk):
             except Exception:
                 pass
 
-    def open_in_ableton(self, out_paths):
-        # Kept name for internal call-site compatibility; opens Ableton Live on Windows.
-        if not self.ableton_path or not os.path.exists(self.ableton_path):
+    def open_in_daw(self, out_paths):
+        if not self.daw_path or not os.path.exists(self.daw_path):
             messagebox.showinfo(
-                "Ableton Live not found",
-                "Couldn't find Ableton Live automatically. Your tracks were exported "
-                "successfully — use the 'Locate Ableton Live…' button in the Output "
-                "section, then export again, to have them open automatically next time."
+                f"{self.daw_choice} not found",
+                f"Couldn't find {self.daw_choice} automatically. Your tracks were exported "
+                "successfully — use the 'Locate…' button in the After Export section, then "
+                "export again, to have them open automatically next time."
             )
             return
         try:
-            # Passing WAV files as args mimics dragging them onto the Ableton Live
-            # icon: it creates a new Live Set with each file loaded as a clip.
-            subprocess.Popen([self.ableton_path] + out_paths)
+            subprocess.Popen([self.daw_path] + out_paths)
         except Exception as e:
-            messagebox.showwarning("Couldn't open Ableton Live", str(e))
-            print(f"Could not open in Ableton Live: {e}")
+            messagebox.showwarning(f"Couldn't open {self.daw_choice}", str(e))
+            print(f"Could not open in {self.daw_choice}: {e}")
 
 
 if __name__ == "__main__":
-    app = X32SplitterApp()
+    app = XLiveSplitterApp()
     app.mainloop()
