@@ -70,7 +70,7 @@ needing to locate their DAW manually the first time, etc.
 -->
 
 ### macOS
-1. Download `Xlive Splitter.app.zip` from the [Releases page](https://github.com/yoyomon999/XLive-Splitter/releases) and unzip it.
+1. Download `Xlive Splitter Mac.zip` from the [Releases page](https://github.com/yoyomon999/XLive-Splitter/releases) and unzip it.
 2. Drag `Xlive Splitter.app` into your **Applications** folder
 3. Open XLive Splitter
 4. Clear app from ***Gate Keeper*** in ***Security***
