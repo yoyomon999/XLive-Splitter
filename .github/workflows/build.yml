@@ -1,56 +1,50 @@
-name: Build EXE and macOS App
+name: Build XLive Splitter
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller numpy customtkinter
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --noconfirm --windowed --name "XLive Splitter" --add-data "$(python3 -c 'import customtkinter; import os; print(os.path.dirname(customtkinter.__file__))'):customtkinter/" xlive_splitter_mac.py
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: XLive_Splitter_macOS
+        path: dist/XLive Splitter.app
+
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install pyinstaller numpy customtkinter
-
-      - name: Build EXE
-        run: |
-          pyinstaller --onefile --windowed --name "X32 Track Splitter" --collect-data customtkinter x32_track_splitter_windows.py
-
-      - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: X32-Track-Splitter-Windows
-          path: dist/X32 Track Splitter.exe
-
-  build-mac:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install pyinstaller numpy customtkinter
-
-      - name: Build App
-        run: |
-          pyinstaller --windowed --name "X32 Track Splitter" --collect-data customtkinter x32_track_splitter.py
-
-      - name: Zip the app bundle
-        run: |
-          cd dist
-          zip -r "X32 Track Splitter.app.zip" "X32 Track Splitter.app"
-
-      - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: X32-Track-Splitter-macOS
-          path: dist/X32 Track Splitter.app.zip
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller numpy customtkinter
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --noconfirm --windowed --name "XLive Splitter" --collect-all customtkinter xlive_splitter_windows.py
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: XLive_Splitter_Windows
+        path: dist/XLive Splitter
