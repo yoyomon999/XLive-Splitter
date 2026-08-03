@@ -76,7 +76,7 @@ needing to locate their DAW manually the first time, etc.
 4. Clear app from ***Gate Keeper*** in ***Security***
 
 ### Windows
-1. Download `Xlive Splitter.exe` from the [Releases page](https://github.com/yoyomon999/XLive-Splitter/releases).
+1. Download `Xlive Splitter Windows.zip` from the [Releases page](https://github.com/yoyomon999/XLive-Splitter/releases).
 2. Open XLive Splitter 
 ---
 
