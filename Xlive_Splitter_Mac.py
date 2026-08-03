@@ -289,8 +289,7 @@ class XLiveSplitterApp(ctk.CTk):
         frame_kwargs = {"fg_color": self.CARD_BG, "corner_radius": 8}
 
         # Everything lives inside a scrollable container so sections can never
-        # render below the visible window/screen edge, no matter how many
-        # cards exist or how small the display is.
+        # render below the visible window/screen edge
         self.main_scroll = ctk.CTkScrollableFrame(self, fg_color=self.DARK_SLATE)
         self.main_scroll.pack(fill="both", expand=True)
 
@@ -308,7 +307,7 @@ class XLiveSplitterApp(ctk.CTk):
 
         row = ctk.CTkFrame(self.src_content_frame, fg_color="transparent")
         row.pack(fill="x", padx=12, pady=8)
-        ctk.CTkButton(row, text="📁 Choose WAV File(s)…", command=self.choose_source, **btn_kwargs).pack(side="left")
+        ctk.CTkButton(row, text="📁 Choose WAV File(s)…", command=lambda: self.after(50, self.choose_source), height=32, corner_radius=6, **btn_kwargs).pack(side="left")
         ctk.CTkLabel(row, text="Select multiple files to stitch them together sequentially.", text_color=self.SILVER, font=self.font_small).pack(side="left", padx=10)
 
         self.source_list_frame = ctk.CTkScrollableFrame(self.src_content_frame, fg_color=self.DARK_SLATE, height=100, corner_radius=6)
@@ -365,7 +364,7 @@ class XLiveSplitterApp(ctk.CTk):
 
         orow = ctk.CTkFrame(self.out_content_frame, fg_color="transparent")
         orow.pack(fill="x")
-        ctk.CTkButton(orow, text="📁 Choose Folder…", command=self.choose_output, **btn_kwargs).pack(side="left")
+        ctk.CTkButton(orow, text="📁 Choose Folder…", command=lambda: self.after(50, self.choose_output), height=32, corner_radius=6, **btn_kwargs).pack(side="left")
         
         self.output_var = ctk.StringVar(value="(same folder as source, in a new subfolder)")
         ctk.CTkLabel(orow, textvariable=self.output_var, text_color=self.SILVER, font=self.font_small, wraplength=400).pack(side="left", padx=12)
@@ -402,7 +401,7 @@ class XLiveSplitterApp(ctk.CTk):
                                           dropdown_text_color=self.COOL_WHITE, width=180, font=self.font_main,
                                           command=self.on_daw_selected)
         self.daw_combo.pack(side="left", padx=(8, 12))
-        self.daw_locate_btn = ctk.CTkButton(drow, text="📁 Locate…", command=self.choose_daw_path, width=90, **btn_kwargs)
+        self.daw_locate_btn = ctk.CTkButton(drow, text="📁 Locate…", command=lambda: self.after(50, self.choose_daw_path), width=90, height=32, corner_radius=6, **btn_kwargs)
         self.daw_locate_btn.pack(side="left")
         self.daw_locate_btn.configure(state=("normal" if self.daw_choice == "Custom…" else "disabled"))
 
@@ -424,9 +423,7 @@ class XLiveSplitterApp(ctk.CTk):
         self.status_label = ctk.CTkLabel(export_frame, text="", text_color=self.SILVER, font=self.font_small)
         self.status_label.pack(fill="x")
 
-        # --- Layout Order (simple top-to-bottom; the scrollable container
-        # above handles anything that doesn't fit, so no more pinning
-        # sections to specific screen edges) ---
+        # --- Layout Order ---
         src_frame.pack(side="top", fill="x", **pad)
         preset_frame.pack(side="top", fill="x", **pad)
         out_frame.pack(side="top", fill="x", **pad)
@@ -434,6 +431,29 @@ class XLiveSplitterApp(ctk.CTk):
         export_frame.pack(side="top", fill="x", **pad)
         
         self.output_dir_override = None
+
+        # Apply global hitbox fix
+        self._fix_button_hitboxes()
+
+    def _fix_button_hitboxes(self, parent=None):
+        if parent is None:
+            parent = self
+
+        for child in parent.winfo_children():
+            if isinstance(child, ctk.CTkButton):
+                command = child.cget("command")
+                if command:
+                    def force_click(event, btn=child, cmd=command):
+                        if btn.cget("state") != "disabled":
+                            cmd()
+                    if hasattr(child, "_canvas") and child._canvas:
+                        child._canvas.bind("<Button-1>", force_click, add="+")
+                    if hasattr(child, "_text_label") and child._text_label:
+                        child._text_label.bind("<Button-1>", force_click, add="+")
+                    if hasattr(child, "_image_label") and child._image_label:
+                        child._image_label.bind("<Button-1>", force_click, add="+")
+            if child.winfo_children():
+                self._fix_button_hitboxes(child)
 
     # ---------------- UI Toggles ----------------
     def toggle_source(self):
@@ -478,10 +498,6 @@ class XLiveSplitterApp(ctk.CTk):
 
     # ---------------- Source File Handling ----------------
     def _bring_to_front(self):
-        # macOS/Tk quirk: native dialogs (file pickers, etc.) can open behind
-        # the main window instead of in front of it, especially right after
-        # a scroll or a collapse/expand click changes what has focus. This
-        # forces the app (and the dialog about to open) to the front.
         try:
             self.lift()
             self.focus_force()
@@ -495,6 +511,7 @@ class XLiveSplitterApp(ctk.CTk):
         self._bring_to_front()
         paths = filedialog.askopenfilenames(
             title="Select XLive multitrack WAV file(s)",
+            initialdir=os.path.expanduser("~"),
             filetypes=[("WAV files", "*.wav *.WAV"), ("All files", "*.*")]
         )
         if not paths:
@@ -528,26 +545,26 @@ class XLiveSplitterApp(ctk.CTk):
             lbl = ctk.CTkLabel(row, text=os.path.basename(p), font=self.font_main, text_color=self.COOL_WHITE)
             lbl.pack(side="left", padx=5)
 
-            btn_del = ctk.CTkButton(row, text="⨂", width=28, height=28, fg_color="transparent", hover_color=self.RUST_RED, text_color=self.SILVER, font=self.font_bold, command=lambda i=idx: self.remove_source(i))
+            btn_del = ctk.CTkButton(row, text="⨂", width=32, height=32, corner_radius=4, fg_color="transparent", hover_color=self.RUST_RED, text_color=self.SILVER, font=self.font_bold, command=lambda i=idx: self.remove_source(i))
             btn_del.pack(side="right", padx=2)
 
-            btn_down = ctk.CTkButton(row, text="↓", width=28, height=28, fg_color=self.MUTED_BTN, hover_color=self.MUTED_HOVER, font=self.font_bold, command=lambda i=idx: self.move_source_down(i))
+            btn_down = ctk.CTkButton(row, text="↓", width=32, height=32, corner_radius=4, fg_color=self.MUTED_BTN, hover_color=self.MUTED_HOVER, font=self.font_bold, command=lambda i=idx: self.move_source_down(i))
             btn_down.pack(side="right", padx=2)
 
-            btn_up = ctk.CTkButton(row, text="↑", width=28, height=28, fg_color=self.MUTED_BTN, hover_color=self.MUTED_HOVER, font=self.font_bold, command=lambda i=idx: self.move_source_up(i))
+            btn_up = ctk.CTkButton(row, text="↑", width=32, height=32, corner_radius=4, fg_color=self.MUTED_BTN, hover_color=self.MUTED_HOVER, font=self.font_bold, command=lambda i=idx: self.move_source_up(i))
             btn_up.pack(side="right", padx=2)
+            
+        self._fix_button_hitboxes(self.source_list_frame)
 
     def move_source_up(self, idx):
         if idx > 0:
             self.source_paths[idx], self.source_paths[idx-1] = self.source_paths[idx-1], self.source_paths[idx]
             self.refresh_source_list()
-            self.validate_and_update_format()
 
     def move_source_down(self, idx):
         if idx < len(self.source_paths) - 1:
             self.source_paths[idx], self.source_paths[idx+1] = self.source_paths[idx+1], self.source_paths[idx]
             self.refresh_source_list()
-            self.validate_and_update_format()
 
     def remove_source(self, idx):
         self.source_paths.pop(idx)
@@ -669,7 +686,7 @@ class XLiveSplitterApp(ctk.CTk):
     # ---------------- Output ----------------
     def choose_output(self):
         self._bring_to_front()
-        path = filedialog.askdirectory(title="Choose output folder")
+        path = filedialog.askdirectory(title="Choose output folder", initialdir=os.path.expanduser("~"))
         if path:
             self.output_dir_override = path
             self.output_var.set(path)
