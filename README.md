@@ -82,11 +82,6 @@ needing to locate their DAW manually the first time, etc.
 
 ## How to Use
 
-
-Numbered walkthrough of an actual export, start to finish. This is
-the core of the README — write it as if guiding someone through
-their first export live. Keep each step to one action.
-Example structure to adapt:
 1. Choose your source WAV file(s) from the X-Live / SD card
 2. Name each channel (or load a saved preset)
 3. Choose an output folder (optional — defaults next to the source)
