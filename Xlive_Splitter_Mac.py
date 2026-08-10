@@ -269,12 +269,88 @@ def format_duration(frames, sample_rate):
 
 
 # ============================================================================
+# Presets / Config
+# ============================================================================
+
+def app_support_dir():
+    base = os.path.expanduser("~/Library/Application Support/XLive Splitter")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def presets_path():
+    return os.path.join(app_support_dir(), "presets.json")
+
+
+def config_path():
+    return os.path.join(app_support_dir(), "config.json")
+
+
+def load_presets():
+    path = presets_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_presets(presets):
+    with open(presets_path(), "w") as f:
+        json.dump(presets, f, indent=2)
+
+
+def load_config():
+    path = config_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_config(cfg):
+    with open(config_path(), "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+# ============================================================================
+# DAW registry (macOS)
+# ============================================================================
+DAW_NAMES = ["Logic Pro", "Ableton Live", "GarageBand", "Pro Tools", "Reaper", "Studio One", "Cubase", "Custom…"]
+
+
+# ============================================================================
 # App-level constants
 # ============================================================================
 
 IS_MAC = sys.platform == "darwin"
 MAX_RECENT = 8
-EXPORT_ORDER_MODES = ["Console order", "Name (A→Z)", "Custom…"]
+def natural_key(text):
+    """Sort key that orders embedded numbers numerically, so a card's
+    take_2.wav lands before take_10.wav instead of after it."""
+    return [int(part) if part.isdigit() else part.lower()
+            for part in re.split(r"(\d+)", str(text))]
+
+
+SORT_MODES = [
+    "Name (A\u2192Z)",
+    "Name (Z\u2192A)",
+    "Date modified (oldest)",
+    "Date modified (newest)",
+    "Size (smallest)",
+    "Size (largest)",
+]
+
+ORDER_CONSOLE = "Console order"
+ORDER_NAME_ASC = "Name (A\u2192Z)"
+ORDER_NAME_DESC = "Name (Z\u2192A)"
+ORDER_CUSTOM = "Custom\u2026"
+EXPORT_ORDER_MODES = [ORDER_CONSOLE, ORDER_NAME_ASC, ORDER_NAME_DESC, ORDER_CUSTOM]
 
 # Collapsible sections: key -> (content frame attr, header button attr, label)
 SECTIONS = {
@@ -352,13 +428,15 @@ class XLiveSplitterApp(_DnDCTk):
 
         self.recent_sessions = self._load_recent_sessions()
         self.custom_order = self._load_custom_orders()
-        self.export_order_mode = self.app_config.get("export_order_mode", EXPORT_ORDER_MODES[0])
+        self.export_order_mode = self.app_config.get("export_order_mode", ORDER_CONSOLE)
         if self.export_order_mode not in EXPORT_ORDER_MODES:
-            self.export_order_mode = EXPORT_ORDER_MODES[0]
+            self.export_order_mode = ORDER_CONSOLE
 
         self.enabled_vars = []
         self.flag_labels = []
         self._dnd_warned = False
+        self._source_rows = []
+        self._drag_index = None
         self.channel_peaks = None
 
         self.export_thread = None
@@ -407,6 +485,19 @@ class XLiveSplitterApp(_DnDCTk):
         if DND_AVAILABLE:
             hint += " Or drag & drop WAV files anywhere in this window."
         ctk.CTkLabel(row, text=hint, text_color=self.SILVER, font=self.font_small, wraplength=380, justify="left").pack(side="left", padx=10)
+
+        srow2 = ctk.CTkFrame(self.src_content_frame, fg_color="transparent")
+        srow2.pack(fill="x", padx=12, pady=(0, 6))
+        ctk.CTkLabel(srow2, text="Sort:", text_color=self.SILVER, font=self.font_small).pack(side="left")
+        self.sort_var = ctk.StringVar(value="")
+        self.sort_combo = ctk.CTkComboBox(srow2, variable=self.sort_var, values=SORT_MODES, state="readonly",
+                                          fg_color=self.DARK_SLATE, text_color=self.COOL_WHITE, button_color=self.MUTED_BTN,
+                                          button_hover_color=self.MUTED_HOVER, dropdown_fg_color=self.CARD_BG,
+                                          dropdown_text_color=self.COOL_WHITE, width=180, height=28, font=self.font_small,
+                                          command=self.sort_source_files)
+        self.sort_combo.pack(side="left", padx=8)
+        ctk.CTkLabel(srow2, text="or drag rows to reorder", text_color=self.SILVER,
+                     font=self.font_small).pack(side="left")
 
         self.source_list_frame = ctk.CTkFrame(self.src_content_frame, fg_color=self.DARK_SLATE, height=100, corner_radius=6)
         self.source_list_frame.pack(fill="x", padx=12, pady=(0, 8))
@@ -673,8 +764,11 @@ class XLiveSplitterApp(_DnDCTk):
         if not paths:
             return
 
-        self.source_paths.extend(paths)
-        self.source_paths = sorted(list(set(self.source_paths)))
+        # Preserve whatever order the list is already in -- sorting here would
+        # silently undo a manual drag every time another file is added.
+        existing = set(self.source_paths)
+        incoming = [p for p in sorted(set(paths) - existing, key=lambda q: natural_key(os.path.basename(q)))]
+        self.source_paths = self.source_paths + incoming
         self._add_recent_session(self.source_paths)
 
         self.refresh_source_list()
@@ -688,9 +782,15 @@ class XLiveSplitterApp(_DnDCTk):
 
     # ---------------- Drag and drop ----------------
     def _setup_drag_and_drop(self):
-        self._register_dnd_recursive(self)
+        self._register_dnd_recursive(self, _is_root=True)
 
-    def _register_dnd_recursive(self, widget):
+    def _register_dnd_recursive(self, widget, _is_root=False):
+        # The menu bar and the combobox dropdowns are children of the root, but
+        # are meant to stay unmapped until used. Registering a drop target on
+        # one realises it as a visible window, which showed up as a stack of
+        # blank grey windows at launch. Skip those subtrees entirely.
+        if not _is_root and widget.winfo_class() in ("Menu", "Toplevel"):
+            return
         try:
             widget.drop_target_register(DND_FILES)
             widget.dnd_bind("<<Drop>>", self._on_files_dropped)
@@ -731,32 +831,130 @@ class XLiveSplitterApp(_DnDCTk):
     def refresh_source_list(self):
         for child in self.source_list_frame.winfo_children():
             child.destroy()
-            
+        self._source_rows = []
+
         if not self.source_paths:
             placeholder_text = "No files selected."
             if DND_AVAILABLE:
                 placeholder_text += " Drag & drop WAV files here."
-            placeholder = ctk.CTkLabel(self.source_list_frame, text=placeholder_text, text_color=self.SILVER, font=self.font_small)
+            placeholder = ctk.CTkLabel(self.source_list_frame, text=placeholder_text,
+                                       text_color=self.SILVER, font=self.font_small)
             placeholder.pack(pady=15)
         else:
             for idx, p in enumerate(self.source_paths):
                 row = ctk.CTkFrame(self.source_list_frame, fg_color="transparent")
                 row.pack(fill="x", pady=2)
+                self._source_rows.append(row)
+
+                handle = ctk.CTkLabel(row, text="\u2630", width=20, text_color=self.SILVER,
+                                      font=self.font_bold, cursor="fleur")
+                handle.pack(side="left", padx=(4, 0))
 
                 lbl = ctk.CTkLabel(row, text=os.path.basename(p), font=self.font_main, text_color=self.COOL_WHITE)
                 lbl.pack(side="left", padx=5)
 
-                btn_del = ctk.CTkButton(row, text="⨂", width=32, height=32, corner_radius=4, fg_color="transparent", hover_color=self.RUST_RED, text_color=self.SILVER, font=self.font_bold, command=lambda i=idx: self.remove_source(i))
+                # Reordering by dragging. The arrow buttons stay as a keyboard-
+                # and precision-friendly fallback.
+                for widget in (row, handle, lbl):
+                    widget.bind("<Button-1>", lambda e, i=idx: self._begin_source_drag(i))
+                    widget.bind("<B1-Motion>", self._source_drag_motion)
+                    widget.bind("<ButtonRelease-1>", self._end_source_drag)
+
+                btn_del = ctk.CTkButton(row, text="\u2a02", width=32, height=32, corner_radius=4, fg_color="transparent", hover_color=self.RUST_RED, text_color=self.SILVER, font=self.font_bold, command=lambda i=idx: self.remove_source(i))
                 btn_del.pack(side="right", padx=2)
 
-                btn_down = ctk.CTkButton(row, text="↓", width=32, height=32, corner_radius=4, fg_color=self.MUTED_BTN, hover_color=self.MUTED_HOVER, font=self.font_bold, command=lambda i=idx: self.move_source_down(i))
+                btn_down = ctk.CTkButton(row, text="\u2193", width=32, height=32, corner_radius=4, fg_color=self.MUTED_BTN, hover_color=self.MUTED_HOVER, font=self.font_bold, command=lambda i=idx: self.move_source_down(i))
                 btn_down.pack(side="right", padx=2)
 
-                btn_up = ctk.CTkButton(row, text="↑", width=32, height=32, corner_radius=4, fg_color=self.MUTED_BTN, hover_color=self.MUTED_HOVER, font=self.font_bold, command=lambda i=idx: self.move_source_up(i))
+                btn_up = ctk.CTkButton(row, text="\u2191", width=32, height=32, corner_radius=4, fg_color=self.MUTED_BTN, hover_color=self.MUTED_HOVER, font=self.font_bold, command=lambda i=idx: self.move_source_up(i))
                 btn_up.pack(side="right", padx=2)
 
         if DND_AVAILABLE:
             self._register_dnd_recursive(self.source_list_frame)
+
+    # ---------------- Reordering by drag ----------------
+    def _begin_source_drag(self, idx):
+        self._drag_index = idx
+
+    def _row_index_at_pointer(self):
+        """Which source row the pointer is currently over."""
+        frame = self.source_list_frame
+        if not self._source_rows:
+            return None
+        try:
+            y = frame.winfo_pointery() - frame.winfo_rooty()
+        except Exception:
+            return None
+        for i, row in enumerate(self._source_rows):
+            try:
+                top = row.winfo_y()
+                if top <= y <= top + row.winfo_height():
+                    return i
+            except Exception:
+                continue
+        return 0 if y < 0 else len(self._source_rows) - 1
+
+    def _source_drag_motion(self, event):
+        # Highlight only -- rebuilding the list mid-drag would destroy the very
+        # widget delivering these events and strand the drag.
+        if self._drag_index is None:
+            return
+        target = self._row_index_at_pointer()
+        for i, row in enumerate(self._source_rows):
+            try:
+                row.configure(fg_color=self.MUTED_BTN if i == target else "transparent")
+            except Exception:
+                pass
+
+    def _end_source_drag(self, event):
+        if self._drag_index is None:
+            return
+        target = self._row_index_at_pointer()
+        source = self._drag_index
+        self._drag_index = None
+        if target is None or target == source:
+            for row in self._source_rows:
+                try:
+                    row.configure(fg_color="transparent")
+                except Exception:
+                    pass
+            return
+        self.source_paths.insert(target, self.source_paths.pop(source))
+        self.sort_var.set("")
+        self.refresh_source_list()
+
+    def sort_source_files(self, mode=None):
+        mode = mode or self.sort_var.get()
+        if not self.source_paths or not mode:
+            return
+
+        def mtime(p):
+            try:
+                return os.path.getmtime(p)
+            except OSError:
+                return 0
+
+        def size(p):
+            try:
+                return os.path.getsize(p)
+            except OSError:
+                return 0
+
+        if mode == "Name (A\u2192Z)":
+            self.source_paths.sort(key=lambda p: natural_key(os.path.basename(p)))
+        elif mode == "Name (Z\u2192A)":
+            self.source_paths.sort(key=lambda p: natural_key(os.path.basename(p)), reverse=True)
+        elif mode == "Date modified (oldest)":
+            self.source_paths.sort(key=mtime)
+        elif mode == "Date modified (newest)":
+            self.source_paths.sort(key=mtime, reverse=True)
+        elif mode == "Size (smallest)":
+            self.source_paths.sort(key=size)
+        elif mode == "Size (largest)":
+            self.source_paths.sort(key=size, reverse=True)
+        else:
+            return
+        self.refresh_source_list()
 
     def move_source_up(self, idx):
         if idx > 0:
@@ -1078,10 +1276,12 @@ class XLiveSplitterApp(_DnDCTk):
     def _current_order_list(self):
         """Channel indices in the order files should be handed to the DAW."""
         n = len(self.name_vars)
-        mode = self.order_var.get() if hasattr(self, "order_var") else EXPORT_ORDER_MODES[0]
-        if mode == EXPORT_ORDER_MODES[1]:  # Name (A-Z)
-            return sorted(range(n), key=lambda i: sanitize_name(self.name_vars[i].get(), f"Track {i+1:02d}").lower())
-        if mode == EXPORT_ORDER_MODES[2]:  # Custom
+        mode = self.order_var.get() if hasattr(self, "order_var") else ORDER_CONSOLE
+        if mode in (ORDER_NAME_ASC, ORDER_NAME_DESC):
+            return sorted(range(n),
+                          key=lambda i: natural_key(sanitize_name(self.name_vars[i].get(), f"Track {i+1:02d}")),
+                          reverse=(mode == ORDER_NAME_DESC))
+        if mode == ORDER_CUSTOM:
             saved = self.custom_order.get(str(n))
             if saved:
                 order = [c for c in saved if 0 <= c < n]
@@ -1092,7 +1292,7 @@ class XLiveSplitterApp(_DnDCTk):
     def _update_reorder_button(self):
         if not hasattr(self, "reorder_btn"):
             return
-        is_custom = self.order_var.get() == EXPORT_ORDER_MODES[2]
+        is_custom = self.order_var.get() == ORDER_CUSTOM
         self.reorder_btn.configure(state=("normal" if is_custom else "disabled"))
 
     def on_order_selected(self, choice):
@@ -1100,7 +1300,7 @@ class XLiveSplitterApp(_DnDCTk):
         self.app_config["export_order_mode"] = choice
         self._queue_config_save()
         self._update_reorder_button()
-        if choice == EXPORT_ORDER_MODES[2] and self.name_vars:
+        if choice == ORDER_CUSTOM and self.name_vars:
             self.open_reorder_dialog()
 
     def open_reorder_dialog(self):
@@ -1148,6 +1348,19 @@ class XLiveSplitterApp(_DnDCTk):
             order[i], order[j] = order[j], order[i]
             repopulate(j)
 
+        def on_drag(event):
+            sel = listbox.curselection()
+            if not sel:
+                return
+            i = sel[0]
+            j = listbox.nearest(event.y)
+            if j < 0 or j == i or j >= len(order):
+                return
+            order.insert(j, order.pop(i))
+            repopulate(j)
+
+        listbox.bind("<B1-Motion>", on_drag)
+
         repopulate()
 
         mrow = ctk.CTkFrame(win, fg_color="transparent")
@@ -1166,9 +1379,9 @@ class XLiveSplitterApp(_DnDCTk):
         def save_order():
             self.custom_order[str(n)] = list(order)
             self.app_config["custom_order"] = dict(self.custom_order)
-            self.order_var.set(EXPORT_ORDER_MODES[2])
-            self.export_order_mode = EXPORT_ORDER_MODES[2]
-            self.app_config["export_order_mode"] = EXPORT_ORDER_MODES[2]
+            self.order_var.set(ORDER_CUSTOM)
+            self.export_order_mode = ORDER_CUSTOM
+            self.app_config["export_order_mode"] = ORDER_CUSTOM
             self._queue_config_save()
             self._update_reorder_button()
             win.destroy()
