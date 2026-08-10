@@ -76,8 +76,7 @@ Recently opened file sets are under **File → Open Recent**.
 
 ## Known Issues
 
-1. **Buttons can become unreliable in the packaged macOS app** the first click works, then it takes a couple of tries. This traces to the Tcl/Tk version bundled into the build rather than the app itself; the same source runs correctly against Tk 8.6.13. The build now uses a newer Python and reports its bundled Tk version. If you hit this on an older release, running from source is a reliable workaround.
-2. **Neither build is code signed**, so macOS Gatekeeper and Windows SmartScreen will both object on first launch. See the setup steps above.
+1. **Neither build is code signed**, so macOS Gatekeeper and Windows SmartScreen will both object on first launch. See the setup steps above.
 
 ---
 
