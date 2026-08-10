@@ -123,7 +123,67 @@ def iter_deinterleaved(paths, chunk_frames=131072):
                     yield np.frombuffer(raw, dtype=dtype).reshape(-1, channels), False
 
 
-def split_multitrack(input_paths, output_dir, names, progress_cb=None, cancel_flag=None):
+SILENCE_THRESHOLD_DB = -60.0
+
+
+def _peak_per_channel(arr, is_24bit, channels, stride=64):
+    """Per-channel peak amplitude (0.0-1.0) for one decoded chunk.
+
+    `stride` subsamples frames so a full-length scan stays fast; peaks are
+    still taken across the whole file, just not every single frame.
+    """
+    sub_arr = arr[::stride]
+    if sub_arr.shape[0] == 0:
+        return np.zeros(channels)
+
+    if is_24bit:
+        b = sub_arr.astype(np.int32)
+        vals = b[:, :, 0] | (b[:, :, 1] << 8) | (b[:, :, 2] << 16)
+        vals = np.where(vals & 0x800000, vals - 0x1000000, vals)
+        return np.abs(vals).max(axis=0) / 8388608.0
+
+    if sub_arr.dtype == np.uint8:
+        vals = sub_arr.astype(np.int32) - 128
+        return np.abs(vals).max(axis=0) / 128.0
+
+    info = np.iinfo(sub_arr.dtype)
+    return np.abs(sub_arr.astype(np.int64)).max(axis=0) / float(-info.min)
+
+
+def scan_channel_peaks(input_paths, progress_cb=None, cancel_flag=None, stride=64):
+    """Scan every source file and return per-channel peak level in dBFS."""
+    fmt = parse_wav_format(input_paths[0])
+    channels = fmt.channels
+    peaks = np.zeros(channels)
+
+    total_bytes = sum(parse_wav_format(p).data_size for p in input_paths)
+    frame_size = channels * (fmt.bits_per_sample // 8)
+    bytes_done = 0
+
+    for arr, is_24bit in iter_deinterleaved(input_paths):
+        if cancel_flag is not None and cancel_flag.is_set():
+            raise InterruptedError("Scan cancelled.")
+        peaks = np.maximum(peaks, _peak_per_channel(arr, is_24bit, channels, stride))
+        bytes_done += arr.shape[0] * frame_size
+        if progress_cb:
+            progress_cb(min(bytes_done, total_bytes), total_bytes)
+
+    with np.errstate(divide="ignore"):
+        db = 20.0 * np.log10(np.maximum(peaks, 1e-12))
+    return [float(x) for x in db]
+
+
+def split_multitrack(input_paths, output_dir, names, progress_cb=None, cancel_flag=None,
+                     enabled=None, order=None):
+    """Split interleaved multitrack WAVs into per-channel mono files.
+
+    `enabled` is an optional list of booleans, one per console channel; channels
+    set to False are never written. `order` is an optional list of channel
+    indices controlling the order of the returned paths (which is the order the
+    files get handed to the DAW). Neither affects filenames: the numeric prefix
+    always reflects the original console input, so skipping channel 4 leaves
+    channel 5 named "05_", not "04_".
+    """
     fmt = parse_wav_format(input_paths[0])
     channels = fmt.channels
     bits = fmt.bits_per_sample
@@ -131,39 +191,64 @@ def split_multitrack(input_paths, output_dir, names, progress_cb=None, cancel_fl
     if len(names) != channels:
         raise ValueError(f"You have {len(names)} track names but the file has {channels} channels.")
 
+    if enabled is None:
+        enabled = [True] * channels
+    if len(enabled) != channels:
+        raise ValueError(f"Got {len(enabled)} channel on/off flags but the file has {channels} channels.")
+
+    active = [i for i in range(channels) if enabled[i]]
+    if not active:
+        raise ValueError("Every channel is set to skip — there is nothing to export.")
+
     os.makedirs(output_dir, exist_ok=True)
-    writers = []
-    out_paths = []
+    writers = [None] * channels
+    path_for_channel = {}
     try:
-        for i, name in enumerate(names):
-            path = os.path.join(output_dir, f"{i+1:02d}_{name}.wav")
-            w = wave.open(path, "wb")
-            w.setnchannels(1)
-            w.setsampwidth(sampwidth)
-            w.setframerate(fmt.sample_rate)
-            writers.append(w)
-            out_paths.append(path)
+        try:
+            for i in active:
+                path = os.path.join(output_dir, f"{i+1:02d}_{names[i]}.wav")
+                w = wave.open(path, "wb")
+                w.setnchannels(1)
+                w.setsampwidth(sampwidth)
+                w.setframerate(fmt.sample_rate)
+                writers[i] = w
+                path_for_channel[i] = path
 
-        total_bytes = sum(parse_wav_format(p).data_size for p in input_paths)
-        bytes_done = 0
-        frame_size = channels * sampwidth
+            total_bytes = sum(parse_wav_format(p).data_size for p in input_paths)
+            bytes_done = 0
+            frame_size = channels * sampwidth
 
-        for arr, is_24bit in iter_deinterleaved(input_paths):
-            if cancel_flag is not None and cancel_flag.is_set():
-                raise InterruptedError("Export cancelled.")
-            if is_24bit:
-                for ch in range(channels):
-                    writers[ch].writeframes(arr[:, ch, :].tobytes())
-            else:
-                for ch in range(channels):
-                    writers[ch].writeframes(arr[:, ch].tobytes())
-            bytes_done += arr.shape[0] * frame_size
-            if progress_cb:
-                progress_cb(min(bytes_done, total_bytes), total_bytes)
-    finally:
-        for w in writers:
-            w.close()
-    return out_paths
+            for arr, is_24bit in iter_deinterleaved(input_paths):
+                if cancel_flag is not None and cancel_flag.is_set():
+                    raise InterruptedError("Export cancelled.")
+                if is_24bit:
+                    for ch in active:
+                        writers[ch].writeframes(arr[:, ch, :].tobytes())
+                else:
+                    for ch in active:
+                        writers[ch].writeframes(arr[:, ch].tobytes())
+                bytes_done += arr.shape[0] * frame_size
+                if progress_cb:
+                    progress_cb(min(bytes_done, total_bytes), total_bytes)
+        finally:
+            for w in writers:
+                if w is not None:
+                    w.close()
+    except InterruptedError:
+        # Writers are closed by now, so the half-written files can be removed.
+        for p in path_for_channel.values():
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        raise
+
+    if order:
+        ordered = [c for c in order if c in path_for_channel]
+        ordered += [c for c in active if c not in ordered]
+    else:
+        ordered = active
+    return [path_for_channel[c] for c in ordered]
 
 
 def sanitize_name(name, fallback):
@@ -315,6 +400,23 @@ def find_daw_executable(name):
 
 
 # ============================================================================
+# App-level constants
+# ============================================================================
+
+IS_MAC = sys.platform == "darwin"
+MAX_RECENT = 8
+EXPORT_ORDER_MODES = ["Console order", "Name (A→Z)", "Custom…"]
+
+# Collapsible sections: key -> (content frame attr, header button attr, label)
+SECTIONS = {
+    "src": ("src_content_frame", "src_header_btn", "1. Source Recording"),
+    "preset": ("preset_content_frame", "preset_header_btn", "2. Track Names"),
+    "out": ("out_content_frame", "out_header_btn", "3. Output"),
+    "automation": ("automation_content_frame", "automation_header_btn", "4. After Export"),
+}
+
+
+# ============================================================================
 # GUI
 # ============================================================================
 
@@ -349,22 +451,46 @@ class XLiveSplitterApp(ctk.CTk):
         self.wav_format = None
         self.name_vars = []
         self.presets = load_presets()
-        self.config = load_config()
+        self.app_config = load_config()
 
-        self.daw_choice = self.config.get("daw_choice", "Ableton Live")
+        self.daw_choice = self.app_config.get("daw_choice", "Ableton Live")
         if self.daw_choice not in DAW_REGISTRY:
             self.daw_choice = "Ableton Live"
-        self.daw_path = self.config.get("daw_path") or find_daw_executable(self.daw_choice)
+        self.daw_path = self.app_config.get("daw_path") or find_daw_executable(self.daw_choice)
         if self.daw_path and not os.path.exists(self.daw_path):
             self.daw_path = find_daw_executable(self.daw_choice)
-        self.auto_open_folder = self.config.get("auto_open_folder", True)
-        self.auto_open_daw = self.config.get("auto_open_daw", True)
+        self.auto_open_folder = self.app_config.get("auto_open_folder", True)
+        self.auto_open_daw = self.app_config.get("auto_open_daw", True)
+
+        # Collapsible section state, remembered between runs. Unknown keys in a
+        # stale config are ignored rather than crashing the build.
+        saved_sections = self.app_config.get("section_state", {})
+        self.section_state = {}
+        for key in SECTIONS:
+            value = saved_sections.get(key, True) if isinstance(saved_sections, dict) else True
+            self.section_state[key] = bool(value)
+        self._config_save_job = None
+
+        self.recent_sessions = self._load_recent_sessions()
+        self.custom_order = self._load_custom_orders()
+        self.export_order_mode = self.app_config.get("export_order_mode", EXPORT_ORDER_MODES[0])
+        if self.export_order_mode not in EXPORT_ORDER_MODES:
+            self.export_order_mode = EXPORT_ORDER_MODES[0]
+
+        self.enabled_vars = []
+        self.channel_peaks = None
 
         self.export_thread = None
         self.cancel_flag = None
         self.progress_queue = queue.Queue()
 
+        self.scan_thread = None
+        self.scan_cancel = None
+        self.scan_queue = queue.Queue()
+
+        self._restore_geometry()
         self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self):
         pad = {"padx": 16, "pady": 10}
@@ -381,22 +507,22 @@ class XLiveSplitterApp(ctk.CTk):
 
         # --- 1. Source Section ---
         src_frame = ctk.CTkFrame(self.main_scroll, **frame_kwargs)
-        self.src_expanded = True
         self.src_header_btn = ctk.CTkButton(src_frame, text="▼ 1. Source Recording", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
                                             hover_color=self.MUTED_BTN, anchor="w", 
                                             command=self.toggle_source)
-        self.src_header_btn.pack(fill="x", padx=6, pady=6)
+        src_frame.grid_columnconfigure(0, weight=1)
+        self.src_header_btn.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
 
         self.src_content_frame = ctk.CTkFrame(src_frame, fg_color="transparent")
-        self.src_content_frame.pack(fill="x", padx=0, pady=0)
+        self.src_content_frame.grid(row=1, column=0, sticky="ew")
 
         row = ctk.CTkFrame(self.src_content_frame, fg_color="transparent")
         row.pack(fill="x", padx=12, pady=8)
         ctk.CTkButton(row, text="📁 Choose WAV File(s)…", command=self.choose_source, height=32, corner_radius=6, **btn_kwargs).pack(side="left")
         ctk.CTkLabel(row, text="Select multiple files to stitch them together sequentially.", text_color=self.SILVER, font=self.font_small).pack(side="left", padx=10)
 
-        self.source_list_frame = ctk.CTkScrollableFrame(self.src_content_frame, fg_color=self.DARK_SLATE, height=100, corner_radius=6)
+        self.source_list_frame = ctk.CTkFrame(self.src_content_frame, fg_color=self.DARK_SLATE, height=100, corner_radius=6)
         self.source_list_frame.pack(fill="x", padx=12, pady=(0, 8))
         
         self.refresh_source_list() 
@@ -406,15 +532,15 @@ class XLiveSplitterApp(ctk.CTk):
 
         # --- 2. Preset Section ---
         preset_frame = ctk.CTkFrame(self.main_scroll, **frame_kwargs)
-        self.preset_expanded = True
         self.preset_header_btn = ctk.CTkButton(preset_frame, text="▼ 2. Track Names", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
                                             hover_color=self.MUTED_BTN, anchor="w", 
                                             command=self.toggle_preset)
-        self.preset_header_btn.pack(fill="x", padx=6, pady=6)
+        preset_frame.grid_columnconfigure(0, weight=1)
+        self.preset_header_btn.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
         
         self.preset_content_frame = ctk.CTkFrame(preset_frame, fg_color="transparent")
-        self.preset_content_frame.pack(fill="both", expand=True, padx=0, pady=0)
+        self.preset_content_frame.grid(row=1, column=0, sticky="nsew")
 
         prow = ctk.CTkFrame(self.preset_content_frame, fg_color="transparent")
         prow.pack(fill="x", padx=12, pady=8)
@@ -431,7 +557,19 @@ class XLiveSplitterApp(ctk.CTk):
         ctk.CTkButton(prow, text="💾 Save As…", command=self.save_preset_as, width=80, **btn_kwargs).pack(side="left", padx=4)
         ctk.CTkButton(prow, text="🗑 Delete", command=self.delete_preset, width=70, **btn_kwargs).pack(side="left", padx=4)
 
-        self.rows_frame = ctk.CTkScrollableFrame(self.preset_content_frame, fg_color=self.DARK_SLATE, corner_radius=6)
+        prow2 = ctk.CTkFrame(self.preset_content_frame, fg_color="transparent")
+        prow2.pack(fill="x", padx=12, pady=(0, 8))
+        ctk.CTkButton(prow2, text="🔍 Scan for Silent", command=self.scan_silent_channels,
+                      width=150, **btn_kwargs).pack(side="left")
+        ctk.CTkButton(prow2, text="✔ Enable All", command=self.enable_all_channels,
+                      width=110, **btn_kwargs).pack(side="left", padx=6)
+        ctk.CTkButton(prow2, text="✏️ Batch Rename…", command=self.open_batch_rename,
+                      width=140, **btn_kwargs).pack(side="left")
+        self.channel_summary_var = ctk.StringVar(value="")
+        ctk.CTkLabel(prow2, textvariable=self.channel_summary_var, text_color=self.SILVER,
+                     font=self.font_small).pack(side="left", padx=10)
+
+        self.rows_frame = ctk.CTkFrame(self.preset_content_frame, fg_color=self.DARK_SLATE, corner_radius=6)
         self.rows_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
         self.placeholder_label = ctk.CTkLabel(self.rows_frame, text="Choose a source file to see channel rows here.", text_color=self.SILVER, font=self.font_small)
@@ -439,15 +577,15 @@ class XLiveSplitterApp(ctk.CTk):
 
         # --- 3. Output Section ---
         out_frame = ctk.CTkFrame(self.main_scroll, **frame_kwargs)
-        self.out_expanded = True
         self.out_header_btn = ctk.CTkButton(out_frame, text="▼ 3. Output", font=self.font_title, 
                                             text_color=self.COOL_WHITE, fg_color="transparent", 
                                             hover_color=self.MUTED_BTN, anchor="w", 
                                             command=self.toggle_output)
-        self.out_header_btn.pack(fill="x", padx=6, pady=6)
+        out_frame.grid_columnconfigure(0, weight=1)
+        self.out_header_btn.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
 
         self.out_content_frame = ctk.CTkFrame(out_frame, fg_color="transparent")
-        self.out_content_frame.pack(fill="x", padx=12, pady=(0, 10))
+        self.out_content_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
 
         orow = ctk.CTkFrame(self.out_content_frame, fg_color="transparent")
         orow.pack(fill="x")
@@ -456,17 +594,33 @@ class XLiveSplitterApp(ctk.CTk):
         self.output_var = ctk.StringVar(value="(same folder as source, in a new subfolder)")
         ctk.CTkLabel(orow, textvariable=self.output_var, text_color=self.SILVER, font=self.font_small, wraplength=400).pack(side="left", padx=12)
 
+        orow2 = ctk.CTkFrame(self.out_content_frame, fg_color="transparent")
+        orow2.pack(fill="x", pady=(12, 0))
+        ctk.CTkLabel(orow2, text="Export order:", **label_kwargs).pack(side="left")
+        self.order_var = ctk.StringVar(value=self.export_order_mode)
+        self.order_combo = ctk.CTkComboBox(orow2, variable=self.order_var, values=EXPORT_ORDER_MODES, state="readonly",
+                                           fg_color=self.DARK_SLATE, text_color=self.COOL_WHITE, button_color=self.MUTED_BTN,
+                                           button_hover_color=self.MUTED_HOVER, dropdown_fg_color=self.CARD_BG,
+                                           dropdown_text_color=self.COOL_WHITE, width=160, font=self.font_main,
+                                           command=self.on_order_selected)
+        self.order_combo.pack(side="left", padx=(8, 8))
+        self.reorder_btn = ctk.CTkButton(orow2, text="↕ Edit Order…", command=self.open_reorder_dialog,
+                                         width=130, height=32, corner_radius=6, **btn_kwargs)
+        self.reorder_btn.pack(side="left")
+        ctk.CTkLabel(self.out_content_frame, text="Sets the order files are handed to the DAW. Filenames always keep the console channel number.",
+                     text_color=self.SILVER, font=self.font_small, wraplength=520, justify="left").pack(anchor="w", pady=(6, 0))
+
         # --- 4. After Export ---
         automation_frame = ctk.CTkFrame(self.main_scroll, **frame_kwargs)
-        self.automation_expanded = True
         self.automation_header_btn = ctk.CTkButton(automation_frame, text="▼ 4. After Export", font=self.font_title,
                                             text_color=self.COOL_WHITE, fg_color="transparent",
                                             hover_color=self.MUTED_BTN, anchor="w",
                                             command=self.toggle_automation)
-        self.automation_header_btn.pack(fill="x", padx=6, pady=6)
+        automation_frame.grid_columnconfigure(0, weight=1)
+        self.automation_header_btn.grid(row=0, column=0, sticky="ew", padx=6, pady=6)
 
         self.automation_content_frame = ctk.CTkFrame(automation_frame, fg_color="transparent")
-        self.automation_content_frame.pack(fill="x", padx=12, pady=(0, 10))
+        self.automation_content_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
 
         self.auto_open_folder_var = ctk.BooleanVar(value=self.auto_open_folder)
         ctk.CTkCheckBox(self.automation_content_frame, text="Open output folder in File Explorer",
@@ -496,16 +650,24 @@ class XLiveSplitterApp(ctk.CTk):
 
         # --- 5. Export ---
         export_frame = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
-        
-        self.export_button = ctk.CTkButton(export_frame, text="⚙️ Export Tracks", command=self.start_export, state="disabled",
-                                           fg_color=self.RUST_RED, text_color=self.WARM_CREAM, hover_color="#A93226", 
+
+        btn_row = ctk.CTkFrame(export_frame, fg_color="transparent")
+        btn_row.pack(fill="x")
+
+        self.export_button = ctk.CTkButton(btn_row, text="⚙️ Export Tracks", command=self.start_export, state="disabled",
+                                           fg_color=self.RUST_RED, text_color=self.WARM_CREAM, hover_color="#A93226",
                                            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"), height=40)
-        self.export_button.pack(fill="x")
+        self.export_button.pack(side="left", fill="x", expand=True)
+
+        self.cancel_button = ctk.CTkButton(btn_row, text="✕ Cancel", command=self.cancel_running_job, state="disabled",
+                                           fg_color=self.MUTED_BTN, text_color=self.COOL_WHITE, hover_color=self.MUTED_HOVER,
+                                           font=self.font_bold, width=110, height=40, corner_radius=6)
+        self.cancel_button.pack(side="left", padx=(10, 0))
 
         self.progress = ctk.CTkProgressBar(export_frame, progress_color=self.RUST_RED, fg_color=self.CARD_BG, height=8)
         self.progress.pack(fill="x", pady=(14, 6))
         self.progress.set(0)
-        
+
         self.status_label = ctk.CTkLabel(export_frame, text="", text_color=self.SILVER, font=self.font_small)
         self.status_label.pack(fill="x")
 
@@ -518,86 +680,93 @@ class XLiveSplitterApp(ctk.CTk):
         
         self.output_dir_override = None
 
-        # Apply global hitbox fix
-        self._fix_button_hitboxes()
+        self._build_menubar()
+        self._bind_shortcuts()
 
-    def _fix_button_hitboxes(self, parent=None):
-        if parent is None:
-            parent = self
-
-        for child in parent.winfo_children():
-            if isinstance(child, ctk.CTkButton):
-                command = child.cget("command")
-                if command and not getattr(child, "_hitbox_fixed", False):
-                    child._hitbox_fixed = True
-                    
-                    # 1. Wrap the original command in a 0.2s debounce to stop double-firing
-                    def debounced_cmd(cmd=command, btn=child):
-                        if btn.cget("state") == "disabled":
-                            return
-                        now = time.time()
-                        if not hasattr(btn, "_last_click_time") or (now - btn._last_click_time) > 0.2:
-                            btn._last_click_time = now
-                            cmd()
-                            
-                    child.configure(command=debounced_cmd)
-                    
-                    # 2. Directly trigger our debounced command, completely bypassing CustomTkinter's internal state machine
-                    def route_click(event, btn=child, action=debounced_cmd):
-                        if btn.cget("state") != "disabled":
-                            action()
-                            
-                    if hasattr(child, "_canvas") and child._canvas:
-                        child._canvas.bind("<Button-1>", route_click, add="+")
-                    if hasattr(child, "_text_label") and child._text_label:
-                        child._text_label.bind("<Button-1>", route_click, add="+")
-                    if hasattr(child, "_image_label") and child._image_label:
-                        child._image_label.bind("<Button-1>", route_click, add="+")
-                        
-            # Recurse into nested frames
-            if child.winfo_children():
-                self._fix_button_hitboxes(child)
+        # Restore collapsed/expanded state from the last session.
+        for key in SECTIONS:
+            self._apply_section_state(key)
+        self._update_reorder_button()
 
     # ---------------- UI Toggles ----------------
-    def toggle_source(self):
-        if self.src_expanded:
-            self.src_content_frame.pack_forget()
-            self.src_header_btn.configure(text="▶ 1. Source Recording")
-            self.src_expanded = False
+    def _apply_section_state(self, key):
+        content_attr, header_attr, label = SECTIONS[key]
+        content = getattr(self, content_attr)
+        header = getattr(self, header_attr)
+        if self.section_state.get(key, True):
+            content.grid()
+            header.configure(text=f"▼ {label}")
         else:
-            self.src_content_frame.pack(fill="x", padx=0, pady=0)
-            self.src_header_btn.configure(text="▼ 1. Source Recording")
-            self.src_expanded = True
+            content.grid_remove()
+            header.configure(text=f"▶ {label}")
+
+    def _toggle_section(self, key):
+        self.section_state[key] = not self.section_state.get(key, True)
+        self._apply_section_state(key)
+        self.app_config["section_state"] = dict(self.section_state)
+        self._queue_config_save()
+
+    def toggle_source(self):
+        self._toggle_section("src")
 
     def toggle_preset(self):
-        if self.preset_expanded:
-            self.preset_content_frame.pack_forget()
-            self.preset_header_btn.configure(text="▶ 2. Track Names")
-            self.preset_expanded = False
-        else:
-            self.preset_content_frame.pack(fill="both", expand=True, padx=0, pady=0)
-            self.preset_header_btn.configure(text="▼ 2. Track Names")
-            self.preset_expanded = True
+        self._toggle_section("preset")
 
     def toggle_output(self):
-        if self.out_expanded:
-            self.out_content_frame.pack_forget()
-            self.out_header_btn.configure(text="▶ 3. Output")
-            self.out_expanded = False
-        else:
-            self.out_content_frame.pack(fill="x", padx=12, pady=(0, 10))
-            self.out_header_btn.configure(text="▼ 3. Output")
-            self.out_expanded = True
+        self._toggle_section("out")
 
     def toggle_automation(self):
-        if self.automation_expanded:
-            self.automation_content_frame.pack_forget()
-            self.automation_header_btn.configure(text="▶ 4. After Export")
-            self.automation_expanded = False
-        else:
-            self.automation_content_frame.pack(fill="x", padx=12, pady=(0, 10))
-            self.automation_header_btn.configure(text="▼ 4. After Export")
-            self.automation_expanded = True
+        self._toggle_section("automation")
+
+    # ---------------- Config persistence ----------------
+    def _queue_config_save(self, delay_ms=400):
+        """Coalesce rapid config writes so clicking never blocks on disk I/O."""
+        if self._config_save_job is not None:
+            try:
+                self.after_cancel(self._config_save_job)
+            except Exception:
+                pass
+        self._config_save_job = self.after(delay_ms, self._flush_config_save)
+
+    def _flush_config_save(self):
+        self._config_save_job = None
+        try:
+            save_config(self.app_config)
+        except Exception:
+            pass
+
+    def _restore_geometry(self):
+        geo = self.app_config.get("window_geometry")
+        if isinstance(geo, str) and geo:
+            try:
+                self.geometry(geo)
+            except Exception:
+                pass
+
+    def _on_close(self):
+        if self.export_thread is not None and self.export_thread.is_alive():
+            if not messagebox.askyesno("Export in progress",
+                                       "An export is still running. Quit anyway? "
+                                       "Partly written files will be left behind.",
+                                       parent=self):
+                return
+            if self.cancel_flag is not None:
+                self.cancel_flag.set()
+        if self.scan_cancel is not None:
+            self.scan_cancel.set()
+        try:
+            self.app_config["window_geometry"] = self.geometry()
+            self.app_config["section_state"] = dict(self.section_state)
+            if self._config_save_job is not None:
+                try:
+                    self.after_cancel(self._config_save_job)
+                except Exception:
+                    pass
+                self._config_save_job = None
+            save_config(self.app_config)
+        except Exception:
+            pass
+        self.destroy()
 
     # ---------------- Source File Handling ----------------
 
@@ -613,7 +782,8 @@ class XLiveSplitterApp(ctk.CTk):
         
         self.source_paths.extend(paths)
         self.source_paths = sorted(list(set(self.source_paths)))
-        
+        self._add_recent_session(self.source_paths)
+
         self.refresh_source_list()
         self.validate_and_update_format()
 
@@ -648,7 +818,6 @@ class XLiveSplitterApp(ctk.CTk):
             btn_up = ctk.CTkButton(row, text="↑", width=32, height=32, corner_radius=4, fg_color=self.MUTED_BTN, hover_color=self.MUTED_HOVER, font=self.font_bold, command=lambda i=idx: self.move_source_up(i))
             btn_up.pack(side="right", padx=2)
             
-        self._fix_button_hitboxes(self.source_list_frame)
 
     def move_source_up(self, idx):
         if idx > 0:
@@ -671,6 +840,10 @@ class XLiveSplitterApp(ctk.CTk):
             self.export_button.configure(state="disabled")
             for child in self.rows_frame.winfo_children():
                 child.destroy()
+            self.name_vars = []
+            self.enabled_vars = []
+            self.channel_peaks = None
+            self.channel_summary_var.set("")
             return
 
         try:
@@ -699,12 +872,12 @@ class XLiveSplitterApp(ctk.CTk):
         )
 
         self.build_channel_rows(fmt.channels)
-        self.export_button.configure(state="normal")
 
     def build_channel_rows(self, n_channels):
         for child in self.rows_frame.winfo_children():
             child.destroy()
         self.name_vars = []
+        self.enabled_vars = []
 
         preset_names = None
         if self.preset_var.get() in self.presets:
@@ -714,20 +887,450 @@ class XLiveSplitterApp(ctk.CTk):
 
         header = ctk.CTkFrame(self.rows_frame, fg_color="transparent")
         header.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(header, text="On", width=42, text_color=self.SILVER, font=self.font_small).pack(side="left")
         ctk.CTkLabel(header, text="Ch", width=30, text_color=self.SILVER, font=self.font_small).pack(side="left")
         ctk.CTkLabel(header, text="Track name", text_color=self.SILVER, font=self.font_small).pack(side="left", padx=(10, 0))
 
         for i in range(n_channels):
             row = ctk.CTkFrame(self.rows_frame, fg_color="transparent")
             row.pack(fill="x", pady=3)
+
+            enabled = ctk.BooleanVar(value=True)
+            ctk.CTkCheckBox(row, text="", variable=enabled, width=42,
+                            checkbox_width=18, checkbox_height=18, corner_radius=4,
+                            fg_color=self.RUST_RED, hover_color="#A93226",
+                            border_color=self.SILVER, border_width=2,
+                            command=self._update_channel_summary).pack(side="left")
+            self.enabled_vars.append(enabled)
+
             ctk.CTkLabel(row, text=f"{i+1:02d}", width=30, text_color=self.WARM_CREAM, font=self.font_bold).pack(side="left")
-            
+
             default = preset_names[i] if preset_names else f"Track {i+1:02d}"
             var = ctk.StringVar(value=default)
-            
+
             entry = ctk.CTkEntry(row, textvariable=var, fg_color=self.CARD_BG, text_color=self.COOL_WHITE, font=self.font_main, border_width=0)
             entry.pack(side="left", padx=(10, 0), fill="x", expand=True)
             self.name_vars.append(var)
+
+        self.channel_peaks = None
+        self._update_channel_summary()
+
+    # ---------------- Channel enable / skip ----------------
+    def _update_channel_summary(self):
+        total = len(self.enabled_vars)
+        if not total:
+            self.channel_summary_var.set("")
+            return
+        on = sum(1 for v in self.enabled_vars if v.get())
+        if on == total:
+            self.channel_summary_var.set(f"All {total} channels will be exported")
+        else:
+            self.channel_summary_var.set(f"{on} of {total} channels will be exported")
+        self.export_button.configure(state=("normal" if on else "disabled"))
+
+    def enable_all_channels(self):
+        for var in self.enabled_vars:
+            var.set(True)
+        self._update_channel_summary()
+
+    def skip_silent_channels(self):
+        """Untick channels that the last scan found to be silent."""
+        if not self.channel_peaks:
+            messagebox.showinfo("No scan yet",
+                                "Run 'Scan for Silent' first so there is level data to work from.",
+                                parent=self)
+            return
+        count = 0
+        for i, var in enumerate(self.enabled_vars):
+            if i < len(self.channel_peaks) and self.channel_peaks[i] < SILENCE_THRESHOLD_DB:
+                var.set(False)
+                count += 1
+        self._update_channel_summary()
+        return count
+
+    def scan_silent_channels(self):
+        if not self.source_paths:
+            messagebox.showinfo("No source file", "Choose a source WAV file first.", parent=self)
+            return
+        if self.scan_thread is not None and self.scan_thread.is_alive():
+            return
+        if self.export_thread is not None and self.export_thread.is_alive():
+            messagebox.showinfo("Export running", "Wait for the export to finish first.", parent=self)
+            return
+
+        self.scan_cancel = threading.Event()
+        self.export_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
+        self.progress.set(0)
+        self.status_label.configure(text="Scanning channel levels\u2026")
+
+        def progress_cb(done, total):
+            self.scan_queue.put(("progress", done, total))
+
+        def worker():
+            try:
+                levels = scan_channel_peaks(self.source_paths, progress_cb=progress_cb,
+                                            cancel_flag=self.scan_cancel)
+                self.scan_queue.put(("done", levels, None))
+            except InterruptedError:
+                self.scan_queue.put(("cancelled", None, None))
+            except Exception as e:
+                self.scan_queue.put(("error", str(e), None))
+
+        self.scan_thread = threading.Thread(target=worker, daemon=True)
+        self.scan_thread.start()
+        self.after(100, self.poll_scan)
+
+    def poll_scan(self):
+        try:
+            while True:
+                msg = self.scan_queue.get_nowait()
+                kind = msg[0]
+                if kind == "progress":
+                    _, done, total = msg
+                    pct = (done / total) if total else 0
+                    self.progress.set(pct)
+                    self.status_label.configure(text=f"Scanning channel levels\u2026 {pct*100:.0f}%")
+                elif kind == "done":
+                    _, levels, _ = msg
+                    self.channel_peaks = levels
+                    self.progress.set(1)
+                    self.cancel_button.configure(state="disabled")
+                    silent = self.skip_silent_channels() or 0
+                    self._update_channel_summary()
+                    if silent:
+                        self.status_label.configure(text=f"Scan complete \u2014 {silent} silent channel(s) set to skip.")
+                        messagebox.showinfo(
+                            "Silent channels found",
+                            f"{silent} channel(s) peaked below {SILENCE_THRESHOLD_DB:.0f} dBFS and have been "
+                            "unticked. Review them before exporting \u2014 anything still ticked will be written.",
+                            parent=self)
+                    else:
+                        self.status_label.configure(text="Scan complete \u2014 no silent channels found.")
+                    return
+                elif kind == "cancelled":
+                    self.progress.set(0)
+                    self.status_label.configure(text="Scan cancelled.")
+                    self.cancel_button.configure(state="disabled")
+                    self._update_channel_summary()
+                    return
+                elif kind == "error":
+                    self.progress.set(0)
+                    self.status_label.configure(text="Scan failed.")
+                    self.cancel_button.configure(state="disabled")
+                    self._update_channel_summary()
+                    messagebox.showerror("Scan failed", msg[1], parent=self)
+                    return
+        except queue.Empty:
+            pass
+        self.after(100, self.poll_scan)
+
+    # ---------------- Batch rename ----------------
+    def open_batch_rename(self):
+        if not self.name_vars:
+            messagebox.showinfo("No channels", "Choose a source WAV file first.", parent=self)
+            return
+
+        win = ctk.CTkToplevel(self)
+        win.title("Batch Rename Tracks")
+        win.geometry("420x300")
+        win.configure(fg_color=self.DARK_SLATE)
+        win.transient(self)
+        win.after(120, win.grab_set)
+
+        find_var = ctk.StringVar()
+        repl_var = ctk.StringVar()
+        prefix_var = ctk.StringVar()
+        suffix_var = ctk.StringVar()
+        only_enabled = ctk.BooleanVar(value=True)
+
+        entry_kwargs = {"fg_color": self.CARD_BG, "text_color": self.COOL_WHITE,
+                        "font": self.font_main, "border_width": 0, "width": 220}
+
+        for label, var in (("Find:", find_var), ("Replace with:", repl_var),
+                           ("Add prefix:", prefix_var), ("Add suffix:", suffix_var)):
+            r = ctk.CTkFrame(win, fg_color="transparent")
+            r.pack(fill="x", padx=16, pady=6)
+            ctk.CTkLabel(r, text=label, width=110, anchor="w",
+                         text_color=self.WARM_CREAM, font=self.font_main).pack(side="left")
+            ctk.CTkEntry(r, textvariable=var, **entry_kwargs).pack(side="left", fill="x", expand=True)
+
+        ctk.CTkCheckBox(win, text="Only rename channels that are ticked",
+                        variable=only_enabled, text_color=self.WARM_CREAM,
+                        font=self.font_main).pack(anchor="w", padx=16, pady=(8, 4))
+
+        def apply_rename():
+            find = find_var.get()
+            for i, var in enumerate(self.name_vars):
+                if only_enabled.get() and i < len(self.enabled_vars) and not self.enabled_vars[i].get():
+                    continue
+                value = var.get()
+                if find:
+                    value = value.replace(find, repl_var.get())
+                var.set(f"{prefix_var.get()}{value}{suffix_var.get()}")
+            win.destroy()
+
+        brow = ctk.CTkFrame(win, fg_color="transparent")
+        brow.pack(fill="x", padx=16, pady=(12, 16))
+        ctk.CTkButton(brow, text="Apply", command=apply_rename, fg_color=self.RUST_RED,
+                      hover_color="#A93226", text_color=self.WARM_CREAM,
+                      font=self.font_bold).pack(side="right")
+        ctk.CTkButton(brow, text="Cancel", command=win.destroy, fg_color=self.MUTED_BTN,
+                      hover_color=self.MUTED_HOVER, text_color=self.COOL_WHITE,
+                      font=self.font_bold).pack(side="right", padx=8)
+
+    # ---------------- Export order ----------------
+    def _load_custom_orders(self):
+        raw = self.app_config.get("custom_order", {})
+        if not isinstance(raw, dict):
+            return {}
+        cleaned = {}
+        for key, value in raw.items():
+            if isinstance(value, list) and all(isinstance(x, int) for x in value):
+                cleaned[str(key)] = value
+        return cleaned
+
+    def _current_order_list(self):
+        """Channel indices in the order files should be handed to the DAW."""
+        n = len(self.name_vars)
+        mode = self.order_var.get() if hasattr(self, "order_var") else EXPORT_ORDER_MODES[0]
+        if mode == EXPORT_ORDER_MODES[1]:  # Name (A-Z)
+            return sorted(range(n), key=lambda i: sanitize_name(self.name_vars[i].get(), f"Track {i+1:02d}").lower())
+        if mode == EXPORT_ORDER_MODES[2]:  # Custom
+            saved = self.custom_order.get(str(n))
+            if saved:
+                order = [c for c in saved if 0 <= c < n]
+                order += [c for c in range(n) if c not in order]
+                return order
+        return list(range(n))
+
+    def _update_reorder_button(self):
+        if not hasattr(self, "reorder_btn"):
+            return
+        is_custom = self.order_var.get() == EXPORT_ORDER_MODES[2]
+        self.reorder_btn.configure(state=("normal" if is_custom else "disabled"))
+
+    def on_order_selected(self, choice):
+        self.export_order_mode = choice
+        self.app_config["export_order_mode"] = choice
+        self._queue_config_save()
+        self._update_reorder_button()
+        if choice == EXPORT_ORDER_MODES[2] and self.name_vars:
+            self.open_reorder_dialog()
+
+    def open_reorder_dialog(self):
+        if not self.name_vars:
+            messagebox.showinfo("No channels", "Choose a source WAV file first.", parent=self)
+            return
+
+        n = len(self.name_vars)
+        order = self._current_order_list()
+
+        win = ctk.CTkToplevel(self)
+        win.title("Custom Export Order")
+        win.geometry("400x480")
+        win.configure(fg_color=self.DARK_SLATE)
+        win.transient(self)
+        win.after(120, win.grab_set)
+
+        ctk.CTkLabel(win, text="Drag order is top to bottom \u2014 this is the order the\n"
+                               "files are passed to the DAW on export.",
+                     text_color=self.SILVER, font=self.font_small, justify="left").pack(anchor="w", padx=16, pady=(14, 6))
+
+        listbox = tk.Listbox(win, bg=self.CARD_BG, fg=self.COOL_WHITE, selectbackground=self.RUST_RED,
+                             selectforeground=self.WARM_CREAM, highlightthickness=0, borderwidth=0,
+                             activestyle="none", exportselection=False)
+        listbox.pack(fill="both", expand=True, padx=16, pady=6)
+
+        def repopulate(sel=None):
+            listbox.delete(0, tk.END)
+            for ch in order:
+                name = sanitize_name(self.name_vars[ch].get(), f"Track {ch+1:02d}")
+                flag = "" if self.enabled_vars[ch].get() else "  (skipped)"
+                listbox.insert(tk.END, f"{ch+1:02d}   {name}{flag}")
+            if sel is not None and 0 <= sel < len(order):
+                listbox.selection_set(sel)
+                listbox.see(sel)
+
+        def move(delta):
+            sel = listbox.curselection()
+            if not sel:
+                return
+            i = sel[0]
+            j = i + delta
+            if not (0 <= j < len(order)):
+                return
+            order[i], order[j] = order[j], order[i]
+            repopulate(j)
+
+        repopulate()
+
+        mrow = ctk.CTkFrame(win, fg_color="transparent")
+        mrow.pack(fill="x", padx=16, pady=(0, 6))
+        btn_kwargs = {"fg_color": self.MUTED_BTN, "hover_color": self.MUTED_HOVER,
+                      "text_color": self.COOL_WHITE, "font": self.font_bold, "width": 70}
+        ctk.CTkButton(mrow, text="\u2191 Up", command=lambda: move(-1), **btn_kwargs).pack(side="left")
+        ctk.CTkButton(mrow, text="\u2193 Down", command=lambda: move(1), **btn_kwargs).pack(side="left", padx=6)
+
+        def reset():
+            order[:] = list(range(n))
+            repopulate()
+
+        ctk.CTkButton(mrow, text="Reset", command=reset, **btn_kwargs).pack(side="left")
+
+        def save_order():
+            self.custom_order[str(n)] = list(order)
+            self.app_config["custom_order"] = dict(self.custom_order)
+            self.order_var.set(EXPORT_ORDER_MODES[2])
+            self.export_order_mode = EXPORT_ORDER_MODES[2]
+            self.app_config["export_order_mode"] = EXPORT_ORDER_MODES[2]
+            self._queue_config_save()
+            self._update_reorder_button()
+            win.destroy()
+
+        brow = ctk.CTkFrame(win, fg_color="transparent")
+        brow.pack(fill="x", padx=16, pady=(6, 16))
+        ctk.CTkButton(brow, text="Save Order", command=save_order, fg_color=self.RUST_RED,
+                      hover_color="#A93226", text_color=self.WARM_CREAM,
+                      font=self.font_bold).pack(side="right")
+        ctk.CTkButton(brow, text="Cancel", command=win.destroy, fg_color=self.MUTED_BTN,
+                      hover_color=self.MUTED_HOVER, text_color=self.COOL_WHITE,
+                      font=self.font_bold).pack(side="right", padx=8)
+
+    # ---------------- Recent sessions ----------------
+    def _load_recent_sessions(self):
+        raw = self.app_config.get("recent_sessions", [])
+        sessions = []
+        if isinstance(raw, list):
+            for entry in raw:
+                if isinstance(entry, list) and all(isinstance(p, str) for p in entry) and entry:
+                    sessions.append(entry)
+        return sessions[:MAX_RECENT]
+
+    def _add_recent_session(self, paths):
+        entry = list(paths)
+        self.recent_sessions = [s for s in self.recent_sessions if s != entry]
+        self.recent_sessions.insert(0, entry)
+        self.recent_sessions = self.recent_sessions[:MAX_RECENT]
+        self.app_config["recent_sessions"] = self.recent_sessions
+        self._queue_config_save()
+        self._refresh_recent_menu()
+
+    def _refresh_recent_menu(self):
+        if not hasattr(self, "recent_menu"):
+            return
+        self.recent_menu.delete(0, tk.END)
+        if not self.recent_sessions:
+            self.recent_menu.add_command(label="(nothing yet)", state="disabled")
+            return
+        for entry in self.recent_sessions:
+            first = os.path.basename(entry[0])
+            label = first if len(entry) == 1 else f"{first}  (+{len(entry)-1} more)"
+            self.recent_menu.add_command(label=label, command=lambda e=entry: self.open_session(e))
+        self.recent_menu.add_separator()
+        self.recent_menu.add_command(label="Clear Menu", command=self.clear_recent_sessions)
+
+    def clear_recent_sessions(self):
+        self.recent_sessions = []
+        self.app_config["recent_sessions"] = []
+        self._queue_config_save()
+        self._refresh_recent_menu()
+
+    def open_session(self, paths):
+        missing = [p for p in paths if not os.path.exists(p)]
+        if missing:
+            messagebox.showwarning(
+                "Files missing",
+                "These files have moved or been deleted:\n\n" + "\n".join(os.path.basename(p) for p in missing),
+                parent=self)
+            paths = [p for p in paths if os.path.exists(p)]
+            if not paths:
+                return
+        self.source_paths = list(paths)
+        self.refresh_source_list()
+        self.validate_and_update_format()
+        if self.source_paths:
+            base = os.path.splitext(os.path.basename(self.source_paths[0]))[0]
+            default_out = os.path.join(os.path.dirname(self.source_paths[0]), f"{base}_Tracks")
+            self.output_dir_override = None
+            self.output_var.set(f"Default: {default_out}")
+
+    # ---------------- Menu bar / shortcuts ----------------
+    def _build_menubar(self):
+        mod_label = "Cmd" if IS_MAC else "Ctrl"
+        self.menubar = tk.Menu(self)
+
+        file_menu = tk.Menu(self.menubar, tearoff=0)
+        file_menu.add_command(label="Open WAV Files\u2026", accelerator=f"{mod_label}+O", command=self.choose_source)
+        self.recent_menu = tk.Menu(file_menu, tearoff=0)
+        file_menu.add_cascade(label="Open Recent", menu=self.recent_menu)
+        file_menu.add_separator()
+        file_menu.add_command(label="Choose Output Folder\u2026", command=self.choose_output)
+        file_menu.add_command(label="Export Tracks", accelerator=f"{mod_label}+E", command=self.start_export)
+        file_menu.add_command(label="Cancel", accelerator="Esc", command=self.cancel_running_job)
+        file_menu.add_separator()
+        file_menu.add_command(label="Quit", command=self._on_close)
+        self.menubar.add_cascade(label="File", menu=file_menu)
+
+        edit_menu = tk.Menu(self.menubar, tearoff=0)
+        edit_menu.add_command(label="Batch Rename\u2026", accelerator=f"{mod_label}+R", command=self.open_batch_rename)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Load Preset", command=self.load_preset)
+        edit_menu.add_command(label="Save Preset As\u2026", accelerator=f"{mod_label}+S", command=self.save_preset_as)
+        edit_menu.add_command(label="Delete Preset", command=self.delete_preset)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Enable All Channels", command=self.enable_all_channels)
+        edit_menu.add_command(label="Skip Silent Channels", command=self.skip_silent_channels)
+        edit_menu.add_command(label="Scan for Silent Channels", command=self.scan_silent_channels)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Edit Custom Export Order\u2026", command=self.open_reorder_dialog)
+        self.menubar.add_cascade(label="Edit", menu=edit_menu)
+
+        help_menu = tk.Menu(self.menubar, tearoff=0)
+        help_menu.add_command(label="About XLive Splitter", command=self.show_about)
+        self.menubar.add_cascade(label="Help", menu=help_menu)
+
+        self._refresh_recent_menu()
+        try:
+            self.configure(menu=self.menubar)
+        except Exception:
+            # Older CustomTkinter builds reject unknown configure keys.
+            self.tk.call(self._w, "configure", "-menu", self.menubar)
+
+    def _bind_shortcuts(self):
+        mod = "Command" if IS_MAC else "Control"
+        bindings = {
+            f"<{mod}-o>": lambda e: self.choose_source(),
+            f"<{mod}-e>": lambda e: self.start_export(),
+            f"<{mod}-s>": lambda e: self.save_preset_as(),
+            f"<{mod}-r>": lambda e: self.open_batch_rename(),
+            "<Escape>": lambda e: self.cancel_running_job(),
+        }
+        for sequence, handler in bindings.items():
+            self.bind_all(sequence, handler)
+
+    def show_about(self):
+        messagebox.showinfo(
+            "XLive Splitter",
+            "Splits X32 / X-Live interleaved multitrack WAV recordings into named "
+            "mono files, ready to drop into a DAW session.\n\n"
+            "Filenames keep the original console channel number, so skipping a "
+            "channel never renumbers the ones you keep.",
+            parent=self)
+
+    def cancel_running_job(self):
+        """Escape / Cancel button: stops whichever background job is running."""
+        if self.scan_cancel is not None and self.scan_thread is not None \
+                and self.scan_thread.is_alive() and not self.scan_cancel.is_set():
+            self.scan_cancel.set()
+            self.status_label.configure(text="Cancelling scan\u2026")
+            self.cancel_button.configure(state="disabled")
+            return
+        if self.cancel_flag is not None and self.export_thread is not None \
+                and self.export_thread.is_alive() and not self.cancel_flag.is_set():
+            self.cancel_flag.set()
+            self.status_label.configure(text="Cancelling export\u2026")
+            self.cancel_button.configure(state="disabled")
 
     # ---------------- Presets ----------------
     def load_preset(self):
@@ -793,9 +1396,9 @@ class XLiveSplitterApp(ctk.CTk):
     def on_daw_selected(self, choice):
         self.daw_choice = choice
         self.daw_path = find_daw_executable(choice)
-        self.config["daw_choice"] = self.daw_choice
-        self.config["daw_path"] = self.daw_path
-        save_config(self.config)
+        self.app_config["daw_choice"] = self.daw_choice
+        self.app_config["daw_path"] = self.daw_path
+        save_config(self.app_config)
         self.daw_status_var.set(self._daw_status_text())
 
     def choose_daw_path(self):
@@ -807,27 +1410,41 @@ class XLiveSplitterApp(ctk.CTk):
         if not path:
             return
         self.daw_path = path
-        self.config["daw_choice"] = self.daw_choice
-        self.config["daw_path"] = path
-        save_config(self.config)
+        self.app_config["daw_choice"] = self.daw_choice
+        self.app_config["daw_path"] = path
+        save_config(self.app_config)
         self.daw_status_var.set(self._daw_status_text())
 
     def on_toggle_auto_open_folder(self):
         self.auto_open_folder = self.auto_open_folder_var.get()
-        self.config["auto_open_folder"] = self.auto_open_folder
-        save_config(self.config)
+        self.app_config["auto_open_folder"] = self.auto_open_folder
+        save_config(self.app_config)
 
     def on_toggle_auto_open_daw(self):
         self.auto_open_daw = self.auto_open_daw_var.get()
-        self.config["auto_open_daw"] = self.auto_open_daw
-        save_config(self.config)
+        self.app_config["auto_open_daw"] = self.auto_open_daw
+        save_config(self.app_config)
 
     # ---------------- Export ----------------
     def start_export(self):
         if not self.source_paths:
             return
+        if self.export_thread is not None and self.export_thread.is_alive():
+            return
+        if self.scan_thread is not None and self.scan_thread.is_alive():
+            messagebox.showinfo("Scan running", "Wait for the channel scan to finish first.", parent=self)
+            return
+
         names = [sanitize_name(v.get(), f"Track {i+1:02d}") for i, v in enumerate(self.name_vars)]
-        if len(set(names)) != len(names):
+        enabled = [v.get() for v in self.enabled_vars] if self.enabled_vars else [True] * len(names)
+
+        active_names = [n for n, on in zip(names, enabled) if on]
+        if not active_names:
+            messagebox.showinfo("Nothing to export",
+                                "Every channel is unticked. Tick at least one channel first.",
+                                parent=self)
+            return
+        if len(set(active_names)) != len(active_names):
             if not messagebox.askyesno("Duplicate names",
                                         "Two or more tracks have the same name after sanitizing. "
                                         "Files may overwrite each other. Continue anyway?",
@@ -840,9 +1457,14 @@ class XLiveSplitterApp(ctk.CTk):
             base = os.path.splitext(os.path.basename(self.source_paths[0]))[0]
             out_dir = os.path.join(os.path.dirname(self.source_paths[0]), f"{base}_Tracks")
 
-        self.export_button.configure(state="disabled", text="⚙️ Exporting…")
+        order = self._current_order_list()
+
+        skipped = len(names) - len(active_names)
+        self.export_button.configure(state="disabled", text="\u2699\ufe0f Exporting\u2026")
+        self.cancel_button.configure(state="normal")
         self.progress.set(0)
-        self.status_label.configure(text="Starting…")
+        self.status_label.configure(
+            text="Starting\u2026" if not skipped else f"Starting\u2026 ({skipped} channel(s) skipped)")
 
         self.cancel_flag = threading.Event()
 
@@ -852,7 +1474,8 @@ class XLiveSplitterApp(ctk.CTk):
         def worker():
             try:
                 out_paths = split_multitrack(self.source_paths, out_dir, names,
-                                              progress_cb=progress_cb, cancel_flag=self.cancel_flag)
+                                              progress_cb=progress_cb, cancel_flag=self.cancel_flag,
+                                              enabled=enabled, order=order)
                 self.progress_queue.put(("done", out_dir, out_paths))
             except InterruptedError:
                 self.progress_queue.put(("cancelled", None, None))
@@ -872,24 +1495,28 @@ class XLiveSplitterApp(ctk.CTk):
                     _, done, total = msg
                     pct = (done / total * 100) if total else 0
                     self.progress.set(pct / 100)
-                    self.status_label.configure(text=f"Exporting… {pct:.0f}%")
+                    self.status_label.configure(text=f"Exporting\u2026 {pct:.0f}%")
                 elif kind == "done":
                     _, out_dir, out_paths = msg
                     self.progress.set(1)
-                    self.status_label.configure(text=f"Done — {len(out_paths)} files written.")
-                    self.export_button.configure(state="normal", text="⚙️ Export Tracks")
+                    self.status_label.configure(text=f"Done \u2014 {len(out_paths)} files written.")
+                    self.export_button.configure(state="normal", text="\u2699\ufe0f Export Tracks")
+                    self.cancel_button.configure(state="disabled")
                     if self.auto_open_folder:
                         self.reveal_in_explorer(out_dir)
                     if self.auto_open_daw:
                         self.open_in_daw(out_paths)
                     return
                 elif kind == "cancelled":
-                    self.status_label.configure(text="Cancelled.")
-                    self.export_button.configure(state="normal", text="⚙️ Export Tracks")
+                    self.progress.set(0)
+                    self.status_label.configure(text="Cancelled \u2014 partial files removed.")
+                    self.export_button.configure(state="normal", text="\u2699\ufe0f Export Tracks")
+                    self.cancel_button.configure(state="disabled")
                     return
                 elif kind == "error":
                     self.status_label.configure(text="Error.")
-                    self.export_button.configure(state="normal", text="⚙️ Export Tracks")
+                    self.export_button.configure(state="normal", text="\u2699\ufe0f Export Tracks")
+                    self.cancel_button.configure(state="disabled")
                     messagebox.showerror("Export failed", msg[1], parent=self)
                     return
         except queue.Empty:
