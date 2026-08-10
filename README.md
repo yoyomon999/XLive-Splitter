@@ -1,140 +1,131 @@
 # XLive-Splitter
 
-<!--
-Combines the limited 4gb files into merged audio tracks and splits X32 Xlive .wav files into multitracks, allowing for custom naming templates and automatically opening them into your selected daw.
+Combines the 4 GB split files from an X32 / X-Live card back into continuous recordings and splits them into individually named mono tracks, with reusable naming presets and automatic handoff to your DAW.
 
-Optional badges row — build status, license, platform support. Delete
-if you don't want these. If you keep the build badge, replace OWNER/REPO
-with your actual GitHub path — it'll auto-update based on your Actions runs.
--->
 ![Build Status](https://github.com/yoyomon999/XLive-Splitter/actions/workflows/build.yml/badge.svg)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-informational)
-<img width="1433" height="760" alt="Screenshot 2026-08-03 at 12 06 34 AM" src="https://github.com/user-attachments/assets/3af1fd37-155e-4b04-a34c-2c8d2db140d1" />
-<img width="1432" height="754" alt="Screenshot 2026-08-03 at 12 06 52 AM" src="https://github.com/user-attachments/assets/218f1bb2-842a-4dae-941d-de927f4ea597" />
 
-
-<!--
-Optional: a screenshot or short GIF of the app in use. Drag an image
-into the GitHub file editor to get its URL, then paste it below.
-This is often the single most useful thing in a README — people
-decide whether to keep reading based on this.
-
--->
-
+<img width="1433" height="760" alt="Screenshot 2026-08-03 at 12 06 34 AM" src="https://github.com/user-attachments/assets/3af1fd37-155e-4b04-a34c-2c8d2db140d1" />
+<img width="1432" height="754" alt="Screenshot 2026-08-03 at 12 06 52 AM" src="https://github.com/user-attachments/assets/218f1bb2-842a-4dae-941d-de927f4ea597" />
 
 ---
 
 ## Features
 
-<!--
-Bullet list, 4-8 items max. Lead with the thing that matters most to
-a first-time reader, not the thing that was hardest to build. Keep
-each bullet to one line if you can.
-Example bullets to adapt:
-- Splits interleaved multitrack WAV files into individually named mono tracks
-- Reusable named presets (e.g. "Sunday Service") so you don't retype channel names
-- Auto-opens the output folder and hands the tracks to your DAW of choice
-- Works on both macOS and Windows
--->
-- Split X32 Xlive .wav multitracks
-- Combines 4bg files into single tracks
-- Track Name Presets
-- Automatically open exported tracks into your selected DAW
+- Splits X32 / X-Live interleaved multitrack WAV files into named mono tracks
+- Stitches the card's 4 GB split files back together into continuous recordings
+- Reusable track name presets, so you don't retype channel names every week
+- Per-channel skip, so unused inputs never reach your session as empty tracks
+- Silent channel detection — scans the recording and flags dead inputs before export
+- Export order control for how tracks land in the DAW
+- Opens the output folder and hands the tracks to your DAW automatically
+- macOS and Windows
 
----
-## Known Issues
-1. When clicking to open "Choose Wave File(s)" or "Choose Folder" it sometimes takes a couple clicks to open.
 ---
 
 ## Download
 
-<!--
-This is the "I just want the app" section — put it near the top,
-before any setup/build instructions. Link straight to your GitHub
-Releases page and/or the specific latest files if you have them.
--->
-
 Grab the latest build from the [Releases page](https://github.com/yoyomon999/XLive-Splitter/releases).
 
-| Platform | Download | Notes |
-|---|---|---|
-| macOS | [Xlive Splitter Mac](https://github.com/yoyomon999/XLive-Splitter/releases/tag/V1.1_Mac) | 
-| Windows | [XLive Splitter Windows ](https://github.com/yoyomon999/XLive-Splitter/releases/tag/V1.1_Windows) | 
+| Platform | Download |
+|---|---|
+| macOS | [XLive Splitter Mac](https://github.com/yoyomon999/XLive-Splitter/releases/tag/V1.1_Mac) |
+| Windows | [XLive Splitter Windows](https://github.com/yoyomon999/XLive-Splitter/releases/tag/V1.1_Windows) |
 
 ---
 
 ## Installation / First-Run Setup
 
-<!--
-Walk through exactly what someone needs to do the very first time,
-step by step, per platform. Include anything non-obvious — e.g.
-Gatekeeper warnings on Mac, antivirus false positives on Windows,
-needing to locate their DAW manually the first time, etc.
--->
-
 ### macOS
-1. Download Xlive Splitter Mac.zip from the [Releases page](https://github.com/yoyomon999/XLive-Splitter/releases) and unzip it.
-2. Drag Xlive Splitter.app into your **Applications** folder
-3. Open XLive Splitter
-4. Clear app from ***Gate Keeper*** in ***Security***
+1. Download `XLive_Splitter_macOS.zip` from the [Releases page](https://github.com/yoyomon999/XLive-Splitter/releases) and unzip it.
+2. Drag **XLive Splitter.app** into your Applications folder.
+3. The first launch will be blocked by Gatekeeper, since the app isn't code-signed. Right-click the app and choose **Open**, then confirm — or clear it under **System Settings → Privacy & Security**.
+4. On first export, if your DAW isn't found automatically, use **Locate…** in the After Export section to point at it.
 
 ### Windows
-1. Download Xlive Splitter Windows.zip from the [Releases page](https://github.com/yoyomon999/XLive-Splitter/releases).
-2. Drag Xlive Splitter.exe into your **Applications** folder
-3. Open XLive Splitter 
+1. Download the Windows zip from the [Releases page](https://github.com/yoyomon999/XLive-Splitter/releases) and unzip it.
+2. Move the extracted **XLive Splitter** folder wherever you'd like to keep it, and run `XLive Splitter.exe` from inside it. Keep the folder intact — the .exe needs the files alongside it.
+3. SmartScreen may warn on first run, since the app isn't signed. Choose **More info → Run anyway**.
+
 ---
 
 ## How to Use
 
-1. Choose your source WAV file(s) from the X-Live / SD card
-2. Name each channel (or load a saved preset)
-3. Choose an output folder (defaults next to the source)
-4. Click Export
-5. Tracks are written, and [folder opens / DAW opens] automatically
+1. **Choose your source WAV file(s)** from the X-Live card. Select several at once and they're stitched together in order; use the arrows to reorder them if needed.
+2. **Name each channel**, or load a saved preset. Use **Batch Rename…** to add a prefix or find-and-replace across every track at once.
+3. **Untick any channels you don't want.** Click **Scan for Silent** to have the app check the recording and untick anything that never rises above −60 dBFS. Review its suggestions — anything left ticked gets exported.
+4. **Choose an output folder** (defaults to a new subfolder beside the source) and set the export order if your session expects something other than console order.
+5. **Click Export.** Progress is shown as it runs, and the export can be cancelled at any point.
+6. The output folder opens and the tracks are handed to your DAW, depending on your After Export settings.
 
+Exported files are named with the console channel number followed by your track name, e.g. `05_Lead Vox.wav`. **Skipping channels never renumbers the rest** — skip channel 4 and channel 5 is still `05_`, so the stems always match the desk.
+
+### Keyboard shortcuts
+
+| Action | macOS | Windows |
+|---|---|---|
+| Open WAV files | `Cmd+O` | `Ctrl+O` |
+| Export tracks | `Cmd+E` | `Ctrl+E` |
+| Save preset | `Cmd+S` | `Ctrl+S` |
+| Batch rename | `Cmd+R` | `Ctrl+R` |
+| Cancel export or scan | `Esc` | `Esc` |
+
+Recently opened file sets are under **File → Open Recent**.
+
+---
+
+## Known Issues
+
+1. **Buttons can become unreliable in the packaged macOS app** — the first click works, then it takes a couple of tries. This traces to the Tcl/Tk version bundled into the build rather than the app itself; the same source runs correctly against Tk 8.6.13. The build now uses a newer Python and reports its bundled Tk version. If you hit this on an older release, running from source is a reliable workaround.
+2. **Neither build is code-signed**, so macOS Gatekeeper and Windows SmartScreen will both object on first launch. See the setup steps above.
 
 ---
 
 ## Building From Source
 
-<!--
-For anyone (including future-you) who wants to run/modify the Python
-source directly instead of using the prebuilt app. List exact commands.
--->
-
 ### Requirements
-- Python 3.9+
+- Python 3.9+ (3.12 recommended)
 - numpy
 - customtkinter
 
+On macOS, the Tcl/Tk version underneath Python matters — use a build with **8.6.13 or newer**. Check yours with:
+
+```bash
+python3 -c "import tkinter; print(tkinter.Tcl().eval('info patchlevel'))"
+```
+
+Homebrew's Python often ships without Tk entirely; the python.org installer is the safer choice.
+
 ### Run locally
 ```bash
-pip install -r requirements.txt
-python xlive_splitter.py        # macOS
-python xlive_splitter_windows.py  # Windows
+pip install numpy customtkinter
+python3 Xlive_Splitter_Mac.py        # macOS
+python Xlive_Splitter_Windows.py     # Windows
 ```
 
 ### Build the app/exe yourself
-<!--
-Summarize your PyInstaller command(s) here, or just link to the
-GitHub Actions workflow if that's how you build releases.
--->
 ```bash
-pyinstaller --onefile --windowed --name "[App Name]" [script.py]
+pip install pyinstaller numpy customtkinter
+
+# macOS
+pyinstaller --noconfirm --windowed --name "XLive Splitter" \
+  --add-data "$(python3 -c 'import customtkinter, os; print(os.path.dirname(customtkinter.__file__))'):customtkinter/" \
+  "Xlive_Splitter_Mac.py"
+
+# Windows
+pyinstaller --noconfirm --windowed --name "XLive Splitter" ^
+  --collect-all customtkinter "Xlive_Splitter_Windows.py"
 ```
 
-Or trigger the automated build: **Actions tab → [workflow name] → Run workflow.**
+Or trigger the automated build: **Actions tab → Build XLive Splitter → Run workflow.** Pushes to `main` build only the platform whose source file changed; a manual run always builds both.
 
 ---
 
 ## Configuration & Data Storage
 
-<!--
-Where does the app save its local settings? This matters if someone
-migrates machines or wants to back up their presets. Fill in the
-actual paths your app uses.
--->
-| What | macOS location | Windows location |
+| What | macOS | Windows |
 |---|---|---|
-| Presets | `~/Library/Application Support/[App Name]/presets.json` | `%APPDATA%\[App Name]\presets.json` |
-| Settings (DAW path, toggles) | `~/Library/Application Support/[App Name]/config.json` | `%APPDATA%\[App Name]\config.json` |
+| Presets | `~/Library/Application Support/XLive Splitter/presets.json` | `%APPDATA%\XLive Splitter\presets.json` |
+| Settings | `~/Library/Application Support/XLive Splitter/config.json` | `%APPDATA%\XLive Splitter\config.json` |
+
+`config.json` holds your DAW choice and path, the After Export toggles, window size and position, which sections are collapsed, recent file sets, and any custom export orders. Delete it to reset the app to defaults — presets are stored separately and won't be affected.
