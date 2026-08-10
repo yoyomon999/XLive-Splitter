@@ -25,9 +25,9 @@ jobs:
       mac: ${{ steps.decide.outputs.mac }}
       windows: ${{ steps.decide.outputs.windows }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         if: github.event_name != 'workflow_dispatch'
         with:
@@ -64,7 +64,7 @@ jobs:
     if: needs.changes.outputs.mac == 'true'
     runs-on: macos-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -76,10 +76,10 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller numpy customtkinter
+        pip install pyinstaller numpy customtkinter tkinterdnd2
     - name: Build with PyInstaller
       run: |
-        pyinstaller --noconfirm --windowed --name "XLive Splitter" --add-data "$(python3 -c 'import customtkinter; import os; print(os.path.dirname(customtkinter.__file__))'):customtkinter/" "Xlive_Splitter_Mac.py"
+        pyinstaller --noconfirm --windowed --name "XLive Splitter" --add-data "$(python3 -c 'import customtkinter; import os; print(os.path.dirname(customtkinter.__file__))'):customtkinter/" --collect-all tkinterdnd2 "Xlive_Splitter_Mac.py"
 
     # Compress the .app into a zip manually to preserve the Mac app structure
     - name: Zip Mac App
@@ -98,7 +98,7 @@ jobs:
     if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -110,10 +110,10 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller numpy customtkinter
+        pip install pyinstaller numpy customtkinter tkinterdnd2
     - name: Build with PyInstaller
       run: |
-        pyinstaller --noconfirm --windowed --name "XLive Splitter" --collect-all customtkinter "Xlive_Splitter_Windows.py"
+        pyinstaller --noconfirm --windowed --name "XLive Splitter" --collect-all customtkinter --collect-all tkinterdnd2 "Xlive_Splitter_Windows.py"
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
