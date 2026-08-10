@@ -16,7 +16,7 @@ Combines the 4 GB split files from an X32 / X-Live card back into continuous rec
 - Stitches the card's 4 GB split files back together into continuous recordings
 - Reusable track name presets, so you don't retype channel names every week
 - Per-channel skip, so unused inputs never reach your session as empty tracks
-- Silent channel detection — scans the recording and flags dead inputs before export
+- Silent channel detection  scans the recording and flags dead inputs before export
 - Export order control for how tracks land in the DAW
 - Opens the output folder and hands the tracks to your DAW automatically
 - macOS and Windows
@@ -44,7 +44,7 @@ Grab the latest build from the [Releases page](https://github.com/yoyomon999/XLi
 
 ### Windows
 1. Download the Windows zip from the [Releases page](https://github.com/yoyomon999/XLive-Splitter/releases) and unzip it.
-2. Move the extracted **XLive Splitter** folder wherever you'd like to keep it, and run `XLive Splitter.exe` from inside it. Keep the folder intact — the .exe needs the files alongside it.
+2. Move the extracted **XLive Splitter** folder wherever you'd like to keep it, and run `XLive Splitter.exe` from inside it. Keep the folder intact the .exe needs the files alongside it.
 3. SmartScreen may warn on first run, since the app isn't signed. Choose **More info → Run anyway**.
 
 ---
@@ -53,12 +53,12 @@ Grab the latest build from the [Releases page](https://github.com/yoyomon999/XLi
 
 1. **Choose your source WAV file(s)** from the X-Live card. Select several at once and they're stitched together in order; use the arrows to reorder them if needed.
 2. **Name each channel**, or load a saved preset. Use **Batch Rename…** to add a prefix or find and replace across every track at once.
-3. **Untick any channels you don't want.** Click **Scan for Silent** to have the app check the recording and untick anything that never rises above −60 dBFS. Review its suggestions — anything left ticked gets exported.
+3. **Untick any channels you don't want.** Click **Scan for Silent** to have the app check the recording and untick anything that never rises above −60 dBFS. Review its suggestions  anything left ticked gets exported.
 4. **Choose an output folder** (defaults to a new subfolder beside the source) and set the export order if your session expects something other than console order.
 5. **Click Export.** Progress is shown as it runs, and the export can be cancelled at any point.
 6. The output folder opens and the tracks are handed to your DAW, depending on your After Export settings.
 
-Exported files are named with the console channel number followed by your track name, e.g. `05_Lead Vox.wav`. **Skipping channels never renumbers the rest** — skip channel 4 and channel 5 is still `05_`, so the stems always match the desk.
+Exported files are named with the console channel number followed by your track name, e.g. `05_Lead Vox.wav`. **Skipping channels never renumbers the rest** skip channel 4 and channel 5 is still `05_`, so the stems always match the desk.
 
 ### Keyboard shortcuts
 
@@ -76,7 +76,7 @@ Recently opened file sets are under **File → Open Recent**.
 
 ## Known Issues
 
-1. **Buttons can become unreliable in the packaged macOS app** — the first click works, then it takes a couple of tries. This traces to the Tcl/Tk version bundled into the build rather than the app itself; the same source runs correctly against Tk 8.6.13. The build now uses a newer Python and reports its bundled Tk version. If you hit this on an older release, running from source is a reliable workaround.
+1. **Buttons can become unreliable in the packaged macOS app** the first click works, then it takes a couple of tries. This traces to the Tcl/Tk version bundled into the build rather than the app itself; the same source runs correctly against Tk 8.6.13. The build now uses a newer Python and reports its bundled Tk version. If you hit this on an older release, running from source is a reliable workaround.
 2. **Neither build is code signed**, so macOS Gatekeeper and Windows SmartScreen will both object on first launch. See the setup steps above.
 
 ---
@@ -88,7 +88,7 @@ Recently opened file sets are under **File → Open Recent**.
 - numpy
 - customtkinter
 
-On macOS, the Tcl/Tk version underneath Python matters — use a build with **8.6.13 or newer**. Check yours with:
+On macOS, the Tcl/Tk version underneath Python matters  use a build with **8.6.13 or newer**. Check yours with:
 
 ```bash
 python3 -c "import tkinter; print(tkinter.Tcl().eval('info patchlevel'))"
@@ -128,4 +128,4 @@ Or trigger the automated build: **Actions tab → Build XLive Splitter → Run w
 | Presets | `~/Library/Application Support/XLive Splitter/presets.json` | `%APPDATA%\XLive Splitter\presets.json` |
 | Settings | `~/Library/Application Support/XLive Splitter/config.json` | `%APPDATA%\XLive Splitter\config.json` |
 
-`config.json` holds your DAW choice and path, the After Export toggles, window size and position, which sections are collapsed, recent file sets, and any custom export orders. Delete it to reset the app to defaults — presets are stored separately and won't be affected.
+`config.json` holds your DAW choice and path, the After Export toggles, window size and position, which sections are collapsed, recent file sets, and any custom export orders. Delete it to reset the app to defaults presets are stored separately and won't be affected.
