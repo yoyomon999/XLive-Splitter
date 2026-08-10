@@ -11,6 +11,7 @@ exported WAV files to your selected DAW (drag-and-drop-onto-the-.exe style),
 which creates a new project with each file loaded as a clip.
 
 Requires: Python 3.9+, numpy, customtkinter, Windows 10/11
+Optional: tkinterdnd2 (enables drag-and-drop of WAV files onto the window)
 Run:      python xlive_splitter_windows.py
 """
 
@@ -40,6 +41,13 @@ try:
 except ImportError:
     print("This app requires customtkinter. Install it with:\n\n    pip3 install customtkinter\n")
     sys.exit(1)
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    DND_AVAILABLE = True
+except ImportError:
+    DND_AVAILABLE = False
+    print("(Optional) Install tkinterdnd2 to drag and drop WAV files onto the window:\n\n    pip3 install tkinterdnd2\n")
 
 
 # ============================================================================
@@ -420,7 +428,19 @@ SECTIONS = {
 # GUI
 # ============================================================================
 
-class XLiveSplitterApp(ctk.CTk):
+# customtkinter's CTk and tkinterdnd2's drop-target support are separate Tk
+# extensions; combining them requires mixing in DnDWrapper and running its
+# init hook, per the standard tkinterdnd2 + customtkinter integration pattern.
+if DND_AVAILABLE:
+    class _DnDCTk(ctk.CTk, TkinterDnD.DnDWrapper):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.TkdndVersion = TkinterDnD._require(self)
+else:
+    _DnDCTk = ctk.CTk
+
+
+class XLiveSplitterApp(_DnDCTk):
     def __init__(self):
         super().__init__()
         
@@ -478,6 +498,8 @@ class XLiveSplitterApp(ctk.CTk):
             self.export_order_mode = EXPORT_ORDER_MODES[0]
 
         self.enabled_vars = []
+        self.flag_labels = []
+        self._dnd_warned = False
         self.channel_peaks = None
 
         self.export_thread = None
@@ -490,6 +512,8 @@ class XLiveSplitterApp(ctk.CTk):
 
         self._restore_geometry()
         self._build_ui()
+        if DND_AVAILABLE:
+            self._setup_drag_and_drop()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self):
@@ -520,7 +544,10 @@ class XLiveSplitterApp(ctk.CTk):
         row = ctk.CTkFrame(self.src_content_frame, fg_color="transparent")
         row.pack(fill="x", padx=12, pady=8)
         ctk.CTkButton(row, text="📁 Choose WAV File(s)…", command=self.choose_source, height=32, corner_radius=6, **btn_kwargs).pack(side="left")
-        ctk.CTkLabel(row, text="Select multiple files to stitch them together sequentially.", text_color=self.SILVER, font=self.font_small).pack(side="left", padx=10)
+        hint = "Select multiple files to stitch them together sequentially."
+        if DND_AVAILABLE:
+            hint += " Or drag & drop WAV files anywhere in this window."
+        ctk.CTkLabel(row, text=hint, text_color=self.SILVER, font=self.font_small, wraplength=380, justify="left").pack(side="left", padx=10)
 
         self.source_list_frame = ctk.CTkFrame(self.src_content_frame, fg_color=self.DARK_SLATE, height=100, corner_radius=6)
         self.source_list_frame.pack(fill="x", padx=12, pady=(0, 8))
@@ -777,9 +804,15 @@ class XLiveSplitterApp(ctk.CTk):
             initialdir=os.path.expanduser("~"),
             filetypes=[("WAV files", "*.wav *.WAV"), ("All files", "*.*")]
         )
+        self._add_source_paths(paths)
+
+    def _add_source_paths(self, paths):
+        """Merge newly chosen/dropped files into the source list and refresh
+        everything that depends on it. Shared by the file picker and drag-and-drop.
+        """
         if not paths:
             return
-        
+
         self.source_paths.extend(paths)
         self.source_paths = sorted(list(set(self.source_paths)))
         self._add_recent_session(self.source_paths)
@@ -793,13 +826,60 @@ class XLiveSplitterApp(ctk.CTk):
             self.output_dir_override = None
             self.output_var.set(f"Default: {default_out}")
 
+    # ---------------- Drag and drop ----------------
+    def _setup_drag_and_drop(self):
+        self._register_dnd_recursive(self)
+
+    def _register_dnd_recursive(self, widget):
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", self._on_files_dropped)
+        except Exception as e:
+            # Some Tk widgets legitimately refuse a drop target. Report only the
+            # first failure -- silence here previously made a completely
+            # non-functional feature look like a working one.
+            if not self._dnd_warned:
+                self._dnd_warned = True
+                print(f"Drag-and-drop unavailable on {widget.__class__.__name__}: {e}")
+        for child in widget.winfo_children():
+            self._register_dnd_recursive(child)
+
+    def _on_files_dropped(self, event):
+        if self.export_thread is not None and self.export_thread.is_alive():
+            return
+        try:
+            raw_paths = self.tk.splitlist(event.data)
+        except Exception:
+            raw_paths = [event.data]
+
+        wav_paths = [p for p in raw_paths if os.path.isfile(p) and p.lower().endswith(".wav")]
+        skipped = len(raw_paths) - len(wav_paths)
+        if not wav_paths:
+            messagebox.showwarning(
+                "Not a WAV file",
+                "Drop one or more .wav files exported from the X32 / X-Live card.",
+                parent=self)
+            return
+
+        self._add_source_paths(wav_paths)
+        if skipped:
+            messagebox.showinfo(
+                "Some files skipped",
+                f"Ignored {skipped} item(s) that weren't .wav files.",
+                parent=self)
+
     def refresh_source_list(self):
         for child in self.source_list_frame.winfo_children():
             child.destroy()
             
         if not self.source_paths:
-            placeholder = ctk.CTkLabel(self.source_list_frame, text="No files selected.", text_color=self.SILVER, font=self.font_small)
+            placeholder_text = "No files selected."
+            if DND_AVAILABLE:
+                placeholder_text += " Drag & drop WAV files here."
+            placeholder = ctk.CTkLabel(self.source_list_frame, text=placeholder_text, text_color=self.SILVER, font=self.font_small)
             placeholder.pack(pady=15)
+            if DND_AVAILABLE:
+                self._register_dnd_recursive(self.source_list_frame)
             return
 
         for idx, p in enumerate(self.source_paths):
@@ -817,7 +897,10 @@ class XLiveSplitterApp(ctk.CTk):
 
             btn_up = ctk.CTkButton(row, text="↑", width=32, height=32, corner_radius=4, fg_color=self.MUTED_BTN, hover_color=self.MUTED_HOVER, font=self.font_bold, command=lambda i=idx: self.move_source_up(i))
             btn_up.pack(side="right", padx=2)
-            
+
+        if DND_AVAILABLE:
+            self._register_dnd_recursive(self.source_list_frame)
+
 
     def move_source_up(self, idx):
         if idx > 0:
@@ -842,6 +925,7 @@ class XLiveSplitterApp(ctk.CTk):
                 child.destroy()
             self.name_vars = []
             self.enabled_vars = []
+            self.flag_labels = []
             self.channel_peaks = None
             self.channel_summary_var.set("")
             return
@@ -878,6 +962,7 @@ class XLiveSplitterApp(ctk.CTk):
             child.destroy()
         self.name_vars = []
         self.enabled_vars = []
+        self.flag_labels = []
 
         preset_names = None
         if self.preset_var.get() in self.presets:
@@ -908,12 +993,21 @@ class XLiveSplitterApp(ctk.CTk):
             default = preset_names[i] if preset_names else f"Track {i+1:02d}"
             var = ctk.StringVar(value=default)
 
+            # Packed before the entry so it reserves its space on the right.
+            flag = ctk.CTkLabel(row, text="", width=70, anchor="e",
+                                text_color=self.RUST_RED, font=self.font_small)
+            flag.pack(side="right", padx=(6, 2))
+            self.flag_labels.append(flag)
+
             entry = ctk.CTkEntry(row, textvariable=var, fg_color=self.CARD_BG, text_color=self.COOL_WHITE, font=self.font_main, border_width=0)
             entry.pack(side="left", padx=(10, 0), fill="x", expand=True)
             self.name_vars.append(var)
 
         self.channel_peaks = None
+        self._update_silent_flags()
         self._update_channel_summary()
+        if DND_AVAILABLE:
+            self._register_dnd_recursive(self.rows_frame)
 
     # ---------------- Channel enable / skip ----------------
     def _update_channel_summary(self):
@@ -933,6 +1027,31 @@ class XLiveSplitterApp(ctk.CTk):
             var.set(True)
         self._update_channel_summary()
 
+    def _silent_channel_indices(self):
+        """Channels the last scan found below the silence threshold."""
+        if not self.channel_peaks:
+            return []
+        return [i for i, db in enumerate(self.channel_peaks)
+                if i < len(self.enabled_vars) and db < SILENCE_THRESHOLD_DB]
+
+    def _update_silent_flags(self):
+        """Mark silent channels in the row list, so the state stays visible
+        after the scan dialog is dismissed."""
+        silent = set(self._silent_channel_indices())
+        for i, label in enumerate(self.flag_labels):
+            label.configure(text="\u26a0 silent" if i in silent else "")
+
+    def _describe_silent(self, indices, limit=14):
+        lines = []
+        for i in indices[:limit]:
+            name = sanitize_name(self.name_vars[i].get(), f"Track {i+1:02d}")
+            peak = self.channel_peaks[i] if self.channel_peaks else None
+            level = "silent" if peak is None or peak <= -119 else f"{peak:.0f} dBFS"
+            lines.append(f"    {i+1:02d}   {name}   ({level})")
+        if len(indices) > limit:
+            lines.append(f"    \u2026 and {len(indices) - limit} more")
+        return "\n".join(lines)
+
     def skip_silent_channels(self):
         """Untick channels that the last scan found to be silent."""
         if not self.channel_peaks:
@@ -940,13 +1059,11 @@ class XLiveSplitterApp(ctk.CTk):
                                 "Run 'Scan for Silent' first so there is level data to work from.",
                                 parent=self)
             return
-        count = 0
-        for i, var in enumerate(self.enabled_vars):
-            if i < len(self.channel_peaks) and self.channel_peaks[i] < SILENCE_THRESHOLD_DB:
-                var.set(False)
-                count += 1
+        silent = self._silent_channel_indices()
+        for i in silent:
+            self.enabled_vars[i].set(False)
         self._update_channel_summary()
-        return count
+        return len(silent)
 
     def scan_silent_channels(self):
         if not self.source_paths:
@@ -996,17 +1113,29 @@ class XLiveSplitterApp(ctk.CTk):
                     self.channel_peaks = levels
                     self.progress.set(1)
                     self.cancel_button.configure(state="disabled")
-                    silent = self.skip_silent_channels() or 0
-                    self._update_channel_summary()
+                    self._update_silent_flags()
+                    silent = self._silent_channel_indices()
                     if silent:
-                        self.status_label.configure(text=f"Scan complete \u2014 {silent} silent channel(s) set to skip.")
-                        messagebox.showinfo(
-                            "Silent channels found",
-                            f"{silent} channel(s) peaked below {SILENCE_THRESHOLD_DB:.0f} dBFS and have been "
-                            "unticked. Review them before exporting \u2014 anything still ticked will be written.",
-                            parent=self)
+                        self.status_label.configure(
+                            text=f"Scan complete \u2014 {len(silent)} silent channel(s) found.")
+                        if messagebox.askyesno(
+                                "Silent channels found",
+                                f"{len(silent)} of {len(self.enabled_vars)} channels peaked below "
+                                f"{SILENCE_THRESHOLD_DB:.0f} dBFS:\n\n"
+                                f"{self._describe_silent(silent)}\n\n"
+                                "Untick them so they aren't exported?",
+                                parent=self):
+                            for i in silent:
+                                self.enabled_vars[i].set(False)
+                            self.status_label.configure(
+                                text=f"Scan complete \u2014 {len(silent)} silent channel(s) set to skip.")
                     else:
                         self.status_label.configure(text="Scan complete \u2014 no silent channels found.")
+                        messagebox.showinfo(
+                            "No silent channels",
+                            f"Every channel has audio above {SILENCE_THRESHOLD_DB:.0f} dBFS.",
+                            parent=self)
+                    self._update_channel_summary()
                     return
                 elif kind == "cancelled":
                     self.progress.set(0)
