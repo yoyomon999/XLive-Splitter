@@ -31,15 +31,14 @@ jobs:
         id: filter
         if: github.event_name != 'workflow_dispatch'
         with:
+          list-files: shell
           filters: |
-            shared: &shared
-              - '.github/workflows/build.yml'
             mac:
-              - *shared
-              - 'Xlive_Splitter_Mac.py'
+              - '.github/workflows/build.yml'
+              - '**/[Xx]live_[Ss]plitter_[Mm]ac.py'
             windows:
-              - *shared
-              - 'Xlive_Splitter_Windows.py'
+              - '.github/workflows/build.yml'
+              - '**/[Xx]live_[Ss]plitter_[Ww]indows.py'
 
       - name: Decide what to build
         id: decide
@@ -56,8 +55,14 @@ jobs:
 
       - name: Summary
         run: |
-          echo "Mac build:     ${{ steps.decide.outputs.mac }}"     >> "$GITHUB_STEP_SUMMARY"
-          echo "Windows build: ${{ steps.decide.outputs.windows }}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "| filter | result | matched files |"
+            echo "|---|---|---|"
+            echo "| mac | ${{ steps.decide.outputs.mac }} | ${{ steps.filter.outputs.mac_files }} |"
+            echo "| windows | ${{ steps.decide.outputs.windows }} | ${{ steps.filter.outputs.windows_files }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "--- files changed in this push ---"
+          git diff --name-only ${{ github.event.before }} ${{ github.sha }} 2>/dev/null || echo "(no before-SHA; likely a manual or first run)"
 
   build-macos:
     needs: changes
