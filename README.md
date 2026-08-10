@@ -39,7 +39,7 @@ Grab the latest build from the [Releases page](https://github.com/yoyomon999/XLi
 ### macOS
 1. Download `XLive_Splitter_macOS.zip` from the [Releases page](https://github.com/yoyomon999/XLive-Splitter/releases) and unzip it.
 2. Drag **XLive Splitter.app** into your Applications folder.
-3. The first launch will be blocked by Gatekeeper, since the app isn't code-signed. Right-click the app and choose **Open**, then confirm — or clear it under **System Settings → Privacy & Security**.
+3. The first launch will be blocked by Gatekeeper, since the app isn't code signed. Right click the app and choose **Open**, then confirm — or clear it under **System Settings → Privacy & Security**.
 4. On first export, if your DAW isn't found automatically, use **Locate…** in the After Export section to point at it.
 
 ### Windows
@@ -52,7 +52,7 @@ Grab the latest build from the [Releases page](https://github.com/yoyomon999/XLi
 ## How to Use
 
 1. **Choose your source WAV file(s)** from the X-Live card. Select several at once and they're stitched together in order; use the arrows to reorder them if needed.
-2. **Name each channel**, or load a saved preset. Use **Batch Rename…** to add a prefix or find-and-replace across every track at once.
+2. **Name each channel**, or load a saved preset. Use **Batch Rename…** to add a prefix or find and replace across every track at once.
 3. **Untick any channels you don't want.** Click **Scan for Silent** to have the app check the recording and untick anything that never rises above −60 dBFS. Review its suggestions — anything left ticked gets exported.
 4. **Choose an output folder** (defaults to a new subfolder beside the source) and set the export order if your session expects something other than console order.
 5. **Click Export.** Progress is shown as it runs, and the export can be cancelled at any point.
@@ -77,7 +77,7 @@ Recently opened file sets are under **File → Open Recent**.
 ## Known Issues
 
 1. **Buttons can become unreliable in the packaged macOS app** — the first click works, then it takes a couple of tries. This traces to the Tcl/Tk version bundled into the build rather than the app itself; the same source runs correctly against Tk 8.6.13. The build now uses a newer Python and reports its bundled Tk version. If you hit this on an older release, running from source is a reliable workaround.
-2. **Neither build is code-signed**, so macOS Gatekeeper and Windows SmartScreen will both object on first launch. See the setup steps above.
+2. **Neither build is code signed**, so macOS Gatekeeper and Windows SmartScreen will both object on first launch. See the setup steps above.
 
 ---
 
